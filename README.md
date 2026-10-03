@@ -19,6 +19,34 @@ python scripts/train.py \
     model.target_backend=openai_compatible \
     model.optimizer=bailian/deepseek-v4-flash-0731 \
     model.target=bailian/deepseek-v4-flash-0731
+    
+export ALFWORLD_DATA="$HOME/.cache/alfworld"
+python scripts/train.py \
+  --config configs/alfworld/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=bailian/deepseek-v4-flash-0731 \
+    model.target=bailian/deepseek-v4-flash-0731
+
+python scripts/train.py \
+  --config configs/spreadsheetbench/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=bailian/deepseek-v4-flash-0731 \
+    model.target=bailian/deepseek-v4-flash-0731
+    
+python scripts/train.py \
+  --config configs/livemathematicianbench/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=bailian/deepseek-v4-flash-0731 \
+    model.target=bailian/deepseek-v4-flash-0731
 
 # self test
 python test-phase/searchqa_test.py --mode cover --num-skills 5
