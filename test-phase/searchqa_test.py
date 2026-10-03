@@ -235,15 +235,19 @@ def select_top_k(candidates: list[Candidate], num_skills: int) -> list[Candidate
 
 
 def select_max_cover_milp(
-    candidates: list[Candidate], num_skills: int
+    candidates: list[Candidate],
+    num_skills: int,
+    initially_covered_ids: frozenset[str] = frozenset(),
 ) -> list[Candidate]:
     """Select an exact maximum-coverage set with a binary MILP.
 
     ``x[j]`` indicates whether candidate ``j`` is selected and ``y[q]``
     indicates whether question ``q`` is covered by at least one selected
-    candidate.  The first solve maximises ``sum(y)``.  A second solve keeps
-    that optimum fixed and minimises a candidate-order score to make the
-    choice among equivalent optima stable where possible.
+    candidate.  ``initially_covered_ids`` allows a fixed prefix, such as
+    ``best_skill``, to contribute to the union without being re-selected.
+    The first solve maximises ``sum(y)`` over the residual questions. A
+    second solve keeps that optimum fixed and minimises a candidate-order
+    score to make the choice among equivalent optima stable where possible.
     """
     if num_skills <= 0 or num_skills > len(candidates):
         raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
@@ -260,9 +264,8 @@ def select_max_cover_milp(
         log(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [max_cover_milp] {message}")
 
     ordered = sorted(candidates, key=lambda candidate: (candidate.version, candidate.name))
-    covered_question_ids = sorted(
-        set().union(*(candidate.correct_ids for candidate in ordered))
-    )
+    all_covered_ids = set().union(*(candidate.correct_ids for candidate in ordered))
+    covered_question_ids = sorted(all_covered_ids - set(initially_covered_ids))
     n_candidates = len(ordered)
     n_questions = len(covered_question_ids)
     question_index = {question_id: index for index, question_id in enumerate(covered_question_ids)}
@@ -309,7 +312,8 @@ def select_max_cover_milp(
     coverage_objective[n_candidates:] = -1.0  # scipy.milp minimises
     report(
         f"model variables={variable_count} ({n_candidates} skills, "
-        f"{n_questions} questions) constraints={len(lower)} num_skills={num_skills}"
+        f"{n_questions} residual questions) constraints={len(lower)} "
+        f"num_skills={num_skills} initially_covered={len(initially_covered_ids)}"
     )
 
     started = time.monotonic()
@@ -379,15 +383,62 @@ def select_max_cover_milp(
     ]
     if len(selected) != num_skills:
         raise RuntimeError(f"MILP selected {len(selected)} skills; expected {num_skills}")
-    verified_coverage = len(set().union(*(candidate.correct_ids for candidate in selected)))
-    if verified_coverage != optimum:
+    selected_covered_ids = set().union(*(candidate.correct_ids for candidate in selected))
+    verified_residual_coverage = len(
+        selected_covered_ids - set(initially_covered_ids)
+    )
+    if verified_residual_coverage != optimum:
         raise RuntimeError(
             f"maximum-coverage verification mismatch: solver={optimum} "
-            f"selected_union={verified_coverage}"
+            f"selected_residual_union={verified_residual_coverage}"
         )
+    verified_coverage = len(set(initially_covered_ids) | selected_covered_ids)
     report(
         f"verified selected={[candidate.name for candidate in selected]} "
         f"coverage={verified_coverage}/{len(ordered[0].records_by_id)}"
+    )
+    return selected
+
+
+def select_best_max_cover_milp(
+    candidates: list[Candidate], num_skills: int, root: Path
+) -> list[Candidate]:
+    """Fix the last complete ``best_skill`` result, then maximise coverage.
+
+    The existing maximum-coverage MILP chooses only the remaining
+    ``num_skills - 1`` candidates, while the fixed best skill contributes its
+    already-covered question IDs to the objective through
+    ``initially_covered_ids``.
+    """
+    if num_skills <= 0 or num_skills > len(candidates):
+        raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
+
+    best = _load_last_best_skill(root, candidates)
+    best_hash = hashlib.sha256(best.skill_path.read_bytes()).hexdigest()
+    remaining = [
+        candidate
+        for candidate in candidates
+        if hashlib.sha256(candidate.skill_path.read_bytes()).hexdigest() != best_hash
+    ]
+    if num_skills - 1 > len(remaining):
+        raise ValueError(
+            f"num_skills={num_skills} requires {num_skills - 1} remaining skills, "
+            f"but only {len(remaining)} are available"
+        )
+    if num_skills == 1:
+        log(f"[select] best_max_cover_milp selected={[best.name]}")
+        return [best]
+
+    selected_remaining = select_max_cover_milp(
+        remaining,
+        num_skills - 1,
+        initially_covered_ids=best.correct_ids,
+    )
+    selected = [best, *selected_remaining]
+    coverage = len(set().union(*(candidate.correct_ids for candidate in selected)))
+    log(
+        f"[select] best_max_cover_milp selected={[candidate.name for candidate in selected]} "
+        f"coverage={coverage}/{len(best.records_by_id)}"
     )
     return selected
 
@@ -867,6 +918,7 @@ def main() -> None:
             "top_k",
             "cover_vote_last",
             "max_cover_milp",
+            "best_max_cover_milp",
             "best_vote_global",
             "vote_global",
             "vote_global_milp",
@@ -886,6 +938,9 @@ def main() -> None:
         "best_repeat": select_best_repeat,
         "top_k": select_top_k,
         "max_cover_milp": select_max_cover_milp,
+        "best_max_cover_milp": lambda pool, count: select_best_max_cover_milp(
+            pool, count, root
+        ),
         "cover_vote_last": select_cover_vote_last,
         "best_vote_global": lambda pool, count: select_best_vote_global(pool, count, root),
         "vote_global": select_vote_global,
