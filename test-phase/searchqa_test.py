@@ -180,6 +180,43 @@ def select_cover(candidates: list[Candidate], num_skills: int) -> list[Candidate
     return selected
 
 
+def select_best_repeat(candidates: list[Candidate], num_skills: int) -> list[Candidate]:
+    """Return the valid_seen-best skill repeated ``num_skills`` times."""
+    if not candidates:
+        raise ValueError("cannot select from an empty candidate pool")
+    if num_skills <= 0:
+        raise ValueError(f"num_skills={num_skills}; expected a positive value")
+
+    best = max(
+        candidates,
+        key=lambda candidate: (len(candidate.correct_ids), -candidate.version),
+    )
+    log(
+        f"[select] best_repeat best={best.name} "
+        f"hard={len(best.correct_ids)} acc={best.accuracy:.4f} "
+        f"repetitions={num_skills}"
+    )
+    return [best] * num_skills
+
+
+def select_top_k(candidates: list[Candidate], num_skills: int) -> list[Candidate]:
+    """Return the top ``num_skills`` distinct candidates by valid_seen score."""
+    if num_skills <= 0 or num_skills > len(candidates):
+        raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
+
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (-len(candidate.correct_ids), candidate.version),
+    )
+    selected = ranked[:num_skills]
+    for rank, candidate in enumerate(selected, 1):
+        log(
+            f"[select] top_k rank={rank}/{num_skills} skill={candidate.name} "
+            f"hard={len(candidate.correct_ids)} acc={candidate.accuracy:.4f}"
+        )
+    return selected
+
+
 def configure_runtime(cfg: dict) -> None:
     """Configure the existing SkillOpt target runtime for this evaluation."""
     from skillopt.model import (
@@ -236,8 +273,12 @@ def candidate_metadata(candidate: Candidate) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("cover",), default="cover")
-    parser.add_argument("--num-skills", type=int, default=5)
+    parser.add_argument(
+        "--mode",
+        choices=("cover", "best_repeat", "top_k"),
+        default="cover",
+    )
+    parser.add_argument("--num-skills", type=int, required=True)
     args = parser.parse_args()
 
     root = RESULT_ROOT.resolve()
@@ -245,13 +286,20 @@ def main() -> None:
         cfg = json.load(handle)
 
     candidates = load_candidates(root)
-    selected = select_cover(candidates, args.num_skills)
+    selectors = {
+        "cover": select_cover,
+        "best_repeat": select_best_repeat,
+        "top_k": select_top_k,
+    }
+    selected = selectors[args.mode](candidates, args.num_skills)
     sys.path.insert(0, str(REPO_ROOT))
     configure_runtime(cfg)
 
     model_name = os.environ["OPENAI_COMPATIBLE_MODEL"].replace("/", "-")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_root = REPO_ROOT / "outputs" / f"skillopt_searchqa_{model_name}_{timestamp}_{args.mode}"
+    output_root = REPO_ROOT / "outputs" / (
+        f"skillopt_searchqa_{model_name}_{timestamp}_{args.mode}_numskills{args.num_skills}"
+    )
     output_root.mkdir(parents=True, exist_ok=False)
     with (output_root / "selection.json").open("w", encoding="utf-8") as handle:
         json.dump(
