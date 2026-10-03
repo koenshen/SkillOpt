@@ -29,6 +29,7 @@ python test-phase/searchqa_test.py --mode best_vote_global --num-skills 5
 python test-phase/searchqa_test.py --mode vote_global --num-skills 5
 python test-phase/searchqa_test.py --mode vote_global_milp --num-skills 5
 python test-phase/searchqa_test.py --mode max_cover_milp --num-skills 5
+python test-phase/searchqa_test.py --mode best_max_cover_milp --num-skills 5
 
 # self check
 python test-phase/test_vote_result.py \
