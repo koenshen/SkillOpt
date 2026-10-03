@@ -1,5 +1,27 @@
 # SkillOpt: Executive Strategy for Self-Evolving Agent Skills
 
+## 261003 self command
+```bash
+export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
+export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
+export OPENAI_COMPATIBLE_MODEL="bailian/deepseek-v4-flash-0731"
+
+# train and test
+python scripts/train.py \
+  --config configs/searchqa/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=bailian/deepseek-v4-flash-0731 \
+    model.target=bailian/deepseek-v4-flash-0731
+
+# self test
+python test-phase/searchqa_test.py --mode cover --num-skills 5
+python test-phase/searchqa_test.py --mode best_repeat --num-skills 5
+python test-phase/searchqa_test.py --mode top_k --num-skills 5
+```
+
 *Train agent skills like you train neural networks — with epochs, (mini-)batchsize, learning rates, and validation gates — but without touching model weights.*
 
 [![Project Page](https://img.shields.io/badge/Project%20Page-SkillOpt-8dbb3c)](https://microsoft.github.io/SkillOpt/) [![Paper](https://img.shields.io/badge/Paper-arXiv-b31b1b)](https://arxiv.org/abs/2605.23904) [![Project Video](https://img.shields.io/badge/Project%20Video-Watch%20Demo-ff0000)](https://youtu.be/JUBMDTCiM0M) [![PyPI](https://img.shields.io/badge/PyPI-skillopt-green.svg)](https://pypi.org/project/skillopt/) [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
