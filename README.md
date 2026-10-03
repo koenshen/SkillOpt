@@ -24,6 +24,7 @@ python scripts/train.py \
 python test-phase/searchqa_test.py --mode cover --num-skills 5
 python test-phase/searchqa_test.py --mode best_repeat --num-skills 5
 python test-phase/searchqa_test.py --mode top_k --num-skills 5
+python test-phase/searchqa_test.py --mode cover_vote_last --num-skills 5
 
 # self check
 python test-phase/test_vote_result.py \

@@ -85,6 +85,15 @@ DATASET_HANDLERS: dict[str, Callable[[], DatasetHandler]] = {
 }
 
 
+def get_dataset_handler(dataset: str) -> DatasetHandler:
+    """Return the canonical handler used by both voting entry points."""
+    try:
+        factory = DATASET_HANDLERS[dataset]
+    except KeyError as exc:
+        raise ValueError(f"unsupported dataset: {dataset}") from exc
+    return factory()
+
+
 def discover_skill_dirs(input_root: Path) -> list[tuple[int, Path]]:
     if not input_root.is_dir():
         raise FileNotFoundError(f"input root does not exist or is not a directory: {input_root}")
@@ -265,7 +274,7 @@ def main() -> None:
             f"output root already exists: {output_root}; choose another path or remove it explicitly"
         )
 
-    handler = DATASET_HANDLERS[args.dataset]()
+    handler = get_dataset_handler(args.dataset)
     skills = load_skill_results(input_root)
     question_ids = sorted(skills[0].rows_by_id)
     log(f"[vote] dataset={args.dataset} skills={len(skills)} questions={len(question_ids)}")

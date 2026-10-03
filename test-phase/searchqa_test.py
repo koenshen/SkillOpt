@@ -2,8 +2,8 @@
 """SearchQA skill selection and evaluation.
 
 The candidate pool is built only from complete ``valid_seen`` evaluations.
-The current implementation provides the greedy ``cover`` selector; future
-selectors can consume the same Candidate objects and output protocol.
+Selectors include greedy ``cover``, repeated-best, top-k, and a hybrid mode
+that optimises the final skill using the shared voting protocol.
 """
 from __future__ import annotations
 
@@ -19,6 +19,18 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TEST_PHASE_ROOT = Path(__file__).resolve().parent
+if str(TEST_PHASE_ROOT) not in sys.path:
+    sys.path.insert(0, str(TEST_PHASE_ROOT))
+
+from test_vote_result import (  # noqa: E402
+    DatasetHandler,
+    SkillResults,
+    build_vote_row,
+    get_dataset_handler,
+)
+
+
 RESULT_ROOT = REPO_ROOT / "outputs" / (
     "skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315"
 )
@@ -217,6 +229,84 @@ def select_top_k(candidates: list[Candidate], num_skills: int) -> list[Candidate
     return selected
 
 
+def _candidate_for_voting(candidate: Candidate, rank: int) -> SkillResults:
+    """Adapt a SearchQA validation candidate to the shared voting protocol."""
+    return SkillResults(
+        rank=rank,
+        name=candidate.name,
+        path=candidate.skill_path,
+        rows_by_id=candidate.records_by_id,
+    )
+
+
+def _validation_vote_score(
+    selected: list[Candidate],
+    handler: DatasetHandler,
+) -> tuple[int, float]:
+    """Score a selected validation set using the canonical voting logic."""
+    vote_skills = [
+        _candidate_for_voting(candidate, rank)
+        for rank, candidate in enumerate(selected, 1)
+    ]
+    question_ids = sorted(vote_skills[0].rows_by_id)
+    vote_rows = [
+        build_vote_row(question_id, vote_skills, handler)
+        for question_id in question_ids
+    ]
+    hard_total = sum(int(row["hard"]) for row in vote_rows)
+    soft_total = sum(float(row["soft"]) for row in vote_rows)
+    return hard_total, soft_total
+
+
+def select_cover_vote_last(
+    candidates: list[Candidate], num_skills: int
+) -> list[Candidate]:
+    """Select a cover prefix, then optimise the final skill for voting.
+
+    The first ``num_skills - 1`` candidates are selected by ``select_cover``.
+    Each remaining candidate is then appended in turn and scored on the
+    complete ``valid_seen`` split through the same voting implementation used
+    by ``test_vote_result.py``.
+    """
+    if num_skills <= 0 or num_skills > len(candidates):
+        raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
+
+    handler = get_dataset_handler("searchqa")
+    prefix = select_cover(candidates, num_skills - 1) if num_skills > 1 else []
+    prefix_names = {candidate.name for candidate in prefix}
+    remaining = [candidate for candidate in candidates if candidate.name not in prefix_names]
+
+    best_candidate: Candidate | None = None
+    best_key: tuple[int, float, int, int] | None = None
+    for candidate in remaining:
+        trial = prefix + [candidate]
+        hard_total, soft_total = _validation_vote_score(trial, handler)
+        # Hard voting accuracy is the objective. Soft score, candidate hard
+        # score, and version only make equal hard scores deterministic.
+        key = (
+            hard_total,
+            soft_total,
+            len(candidate.correct_ids),
+            -candidate.version,
+        )
+        log(
+            f"[select] cover_vote_last candidate={candidate.name} "
+            f"vote_hard={hard_total}/{len(candidate.records_by_id)} "
+            f"vote_soft={soft_total / max(len(candidate.records_by_id), 1):.4f}"
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_candidate = candidate
+
+    assert best_candidate is not None
+    selected = prefix + [best_candidate]
+    log(
+        f"[select] cover_vote_last selected="
+        f"{[candidate.name for candidate in selected]}"
+    )
+    return selected
+
+
 def configure_runtime(cfg: dict) -> None:
     """Configure the existing SkillOpt target runtime for this evaluation."""
     from skillopt.model import (
@@ -275,7 +365,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=("cover", "best_repeat", "top_k"),
+        choices=("cover", "best_repeat", "top_k", "cover_vote_last"),
         default="cover",
     )
     parser.add_argument("--num-skills", type=int, required=True)
@@ -290,6 +380,7 @@ def main() -> None:
         "cover": select_cover,
         "best_repeat": select_best_repeat,
         "top_k": select_top_k,
+        "cover_vote_last": select_cover_vote_last,
     }
     selected = selectors[args.mode](candidates, args.num_skills)
     sys.path.insert(0, str(REPO_ROOT))
