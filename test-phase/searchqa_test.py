@@ -234,6 +234,164 @@ def select_top_k(candidates: list[Candidate], num_skills: int) -> list[Candidate
     return selected
 
 
+def select_max_cover_milp(
+    candidates: list[Candidate], num_skills: int
+) -> list[Candidate]:
+    """Select an exact maximum-coverage set with a binary MILP.
+
+    ``x[j]`` indicates whether candidate ``j`` is selected and ``y[q]``
+    indicates whether question ``q`` is covered by at least one selected
+    candidate.  The first solve maximises ``sum(y)``.  A second solve keeps
+    that optimum fixed and minimises a candidate-order score to make the
+    choice among equivalent optima stable where possible.
+    """
+    if num_skills <= 0 or num_skills > len(candidates):
+        raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
+    try:
+        import numpy as np
+        from scipy.optimize import Bounds, LinearConstraint, milp
+        from scipy.sparse import coo_matrix
+    except ImportError as exc:
+        raise RuntimeError(
+            "max_cover_milp requires scipy>=1.9 and numpy in the active SkillOpt environment"
+        ) from exc
+
+    def report(message: str) -> None:
+        log(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [max_cover_milp] {message}")
+
+    ordered = sorted(candidates, key=lambda candidate: (candidate.version, candidate.name))
+    covered_question_ids = sorted(
+        set().union(*(candidate.correct_ids for candidate in ordered))
+    )
+    n_candidates = len(ordered)
+    n_questions = len(covered_question_ids)
+    question_index = {question_id: index for index, question_id in enumerate(covered_question_ids)}
+    variable_count = n_candidates + n_questions
+
+    row_indices: list[int] = []
+    col_indices: list[int] = []
+    values: list[float] = []
+    lower: list[float] = []
+    upper: list[float] = []
+
+    def add_constraint(coeffs: dict[int, float], lo=-np.inf, hi=np.inf) -> None:
+        row_index = len(lower)
+        for column, value in coeffs.items():
+            if value:
+                row_indices.append(row_index)
+                col_indices.append(column)
+                values.append(float(value))
+        lower.append(float(lo))
+        upper.append(float(hi))
+
+    # Select exactly num_skills candidates.
+    add_constraint({index: 1 for index in range(n_candidates)}, num_skills, num_skills)
+    # y[q] can be one only if at least one selected skill covers q.
+    for question_id, question_offset in question_index.items():
+        covering = [
+            candidate_index
+            for candidate_index, candidate in enumerate(ordered)
+            if question_id in candidate.correct_ids
+        ]
+        coefficients = {n_candidates + question_offset: 1}
+        coefficients.update({candidate_index: -1 for candidate_index in covering})
+        add_constraint(coefficients, hi=0)
+
+    matrix = coo_matrix(
+        (values, (row_indices, col_indices)),
+        shape=(len(lower), variable_count),
+    ).tocsc()
+    base_constraints = LinearConstraint(matrix, np.asarray(lower), np.asarray(upper))
+    bounds = Bounds(np.zeros(variable_count), np.ones(variable_count))
+    integrality = np.ones(variable_count)
+
+    coverage_objective = np.zeros(variable_count)
+    coverage_objective[n_candidates:] = -1.0  # scipy.milp minimises
+    report(
+        f"model variables={variable_count} ({n_candidates} skills, "
+        f"{n_questions} questions) constraints={len(lower)} num_skills={num_skills}"
+    )
+
+    started = time.monotonic()
+    report("solve stage=coverage started; HiGHS progress below uses minimisation signs")
+    coverage_result = milp(
+        c=coverage_objective,
+        integrality=integrality,
+        bounds=bounds,
+        constraints=base_constraints,
+        options={"disp": True, "mip_rel_gap": 0.0},
+    )
+    coverage_bound = getattr(coverage_result, "mip_dual_bound", None)
+    report(
+        f"solve stage=coverage finished status={coverage_result.status} "
+        f"success={coverage_result.success} elapsed={time.monotonic() - started:.1f}s "
+        f"objective={-coverage_result.fun if coverage_result.fun is not None else None} "
+        f"best_bound={-coverage_bound if coverage_bound is not None else None} "
+        f"mip_gap={getattr(coverage_result, 'mip_gap', None)} message={coverage_result.message}"
+    )
+    if (
+        not coverage_result.success
+        or coverage_result.x is None
+        or coverage_result.fun is None
+        or coverage_result.status != 0
+    ):
+        raise RuntimeError(
+            f"maximum-coverage MILP did not prove optimality: {coverage_result.message}"
+        )
+    optimum = int(round(-float(coverage_result.fun)))
+
+    # Fix the exact coverage optimum and choose a deterministic candidate set.
+    # Prefer earlier candidates in the deterministic ``ordered`` list without
+    # changing the primary coverage. Equal secondary scores can still exist;
+    # they have identical maximum coverage.
+    tie_break_weights = np.zeros(variable_count)
+    tie_break_weights[:n_candidates] = np.arange(1, n_candidates + 1, dtype=float)
+    tie_constraints = [
+        base_constraints,
+        LinearConstraint(
+            np.asarray(coverage_objective).reshape(1, -1), -optimum, -optimum
+        ),
+    ]
+    started = time.monotonic()
+    report(f"solve stage=tie_break started coverage_fixed={optimum}")
+    tie_result = milp(
+        c=tie_break_weights,
+        integrality=integrality,
+        bounds=bounds,
+        constraints=tie_constraints,
+        options={"disp": True, "mip_rel_gap": 0.0},
+    )
+    tie_bound = getattr(tie_result, "mip_dual_bound", None)
+    report(
+        f"solve stage=tie_break finished status={tie_result.status} "
+        f"success={tie_result.success} elapsed={time.monotonic() - started:.1f}s "
+        f"objective={tie_result.fun if tie_result.fun is not None else None} "
+        f"best_bound={tie_bound} mip_gap={getattr(tie_result, 'mip_gap', None)} "
+        f"message={tie_result.message}"
+    )
+    if not tie_result.success or tie_result.x is None or tie_result.status != 0:
+        raise RuntimeError(
+            f"maximum-coverage tie-break MILP did not prove optimality: {tie_result.message}"
+        )
+
+    selected = [
+        candidate for index, candidate in enumerate(ordered) if tie_result.x[index] > 0.5
+    ]
+    if len(selected) != num_skills:
+        raise RuntimeError(f"MILP selected {len(selected)} skills; expected {num_skills}")
+    verified_coverage = len(set().union(*(candidate.correct_ids for candidate in selected)))
+    if verified_coverage != optimum:
+        raise RuntimeError(
+            f"maximum-coverage verification mismatch: solver={optimum} "
+            f"selected_union={verified_coverage}"
+        )
+    report(
+        f"verified selected={[candidate.name for candidate in selected]} "
+        f"coverage={verified_coverage}/{len(ordered[0].records_by_id)}"
+    )
+    return selected
+
+
 def _candidate_for_voting(candidate: Candidate, rank: int) -> SkillResults:
     """Adapt a SearchQA validation candidate to the shared voting protocol."""
     return SkillResults(
@@ -708,6 +866,7 @@ def main() -> None:
             "best_repeat",
             "top_k",
             "cover_vote_last",
+            "max_cover_milp",
             "best_vote_global",
             "vote_global",
             "vote_global_milp",
@@ -726,6 +885,7 @@ def main() -> None:
         "cover": select_cover,
         "best_repeat": select_best_repeat,
         "top_k": select_top_k,
+        "max_cover_milp": select_max_cover_milp,
         "cover_vote_last": select_cover_vote_last,
         "best_vote_global": lambda pool, count: select_best_vote_global(pool, count, root),
         "vote_global": select_vote_global,
