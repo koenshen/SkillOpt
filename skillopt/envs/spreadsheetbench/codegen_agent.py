@@ -34,7 +34,12 @@ from skillopt.model.azure_openai import (
     _needs_responses_api,
     tracker,
 )
-from skillopt.model import get_codex_exec_config, get_target_backend, is_target_exec_backend
+from skillopt.model import (
+    chat_target_messages,
+    get_codex_exec_config,
+    get_target_backend,
+    is_target_exec_backend,
+)
 from skillopt.model.codex_harness import prepare_workspace, render_skill_md, run_target_exec
 from skillopt.prompts import load_prompt
 from skillopt.envs.spreadsheetbench.executor import run_generated_code
@@ -384,6 +389,14 @@ def _chat_call(
     llm_timeout: int | None = 120,
 ) -> str:
     """Single LLM call, no tools. Returns raw text."""
+    if get_target_backend() == "openai_compatible":
+        text, _usage = chat_target_messages(
+            messages=messages,
+            max_completion_tokens=max_output_tokens,
+            timeout=llm_timeout,
+        )
+        return text
+
     reasoning_effort = get_reasoning_effort()
     if _needs_responses_api(deployment):
         # Responses API
@@ -504,7 +517,7 @@ def run_single(
         }
 
     deadline = None if no_task_timeout else time.time() + task_timeout
-    client = get_target_client()
+    client = None if get_target_backend() == "openai_compatible" else get_target_client()
     deployment = _get_deployment()
     system = _build_system(skill_content)
     user = _build_user(
@@ -679,7 +692,7 @@ def run_multi(
         }
 
     deadline = None if no_task_timeout else time.time() + task_timeout
-    client = get_target_client()
+    client = None if get_target_backend() == "openai_compatible" else get_target_client()
     deployment = _get_deployment()
     system = _build_system(skill_content)
     user = _build_user(
