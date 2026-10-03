@@ -2,6 +2,10 @@
 
 ## 261003 self command
 ```bash
+uv venv --python 3.11.15
+source .venv/bin/activate
+uv pip install -r requirements.txt
+
 export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
 export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
 export OPENAI_COMPATIBLE_MODEL="bailian/deepseek-v4-flash-0731"
