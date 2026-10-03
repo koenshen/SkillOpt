@@ -1,6 +1,6 @@
 # SkillOpt: Executive Strategy for Self-Evolving Agent Skills
 
-## 261003 self command
+## 261003 self command - install venv
 ```bash
 uv venv --python 3.11.15
 source .venv/bin/activate
@@ -9,8 +9,39 @@ uv pip install -r requirements.txt
 export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
 export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
 export OPENAI_COMPATIBLE_MODEL="bailian/deepseek-v4-flash-0731"
+```
 
-# train and test
+## 261003 self command - data download
+```bash
+uv pip install -e ".[searchqa]"
+python scripts/materialize_searchqa.py
+
+uv pip install -e ".[alfworld]"
+uv pip install "alfworld[full]"
+alfworld-download
+
+mkdir -p data/raw/livemathematicianbench
+hf download LiveMathematicianBench/LiveMathematicianBench \
+  --repo-type dataset \
+  --local-dir data/raw/livemathematicianbench
+
+mkdir -p data/raw/spreadsheetbench
+hf download KAKA22/SpreadsheetBench \
+  --repo-type dataset \
+  --local-dir data/raw/spreadsheetbench
+tar -xzf \
+  data/raw/spreadsheetbench/spreadsheetbench_verified_400.tar.gz \
+  -C data
+
+hf auth login
+mkdir -p data/raw/officeqa
+hf download databricks/officeqa \
+  --repo-type dataset \
+  --local-dir data/raw/officeqa
+```
+
+## 261003 self command - train and test
+```bash
 python scripts/train.py \
   --config configs/searchqa/default.yaml \
   --cfg-options \
@@ -47,8 +78,10 @@ python scripts/train.py \
     model.target_backend=openai_compatible \
     model.optimizer=bailian/deepseek-v4-flash-0731 \
     model.target=bailian/deepseek-v4-flash-0731
+```
 
-# self test
+## 261003 self command - # self test
+```bash
 python test-phase/searchqa_test.py --mode cover --num-skills 5
 python test-phase/searchqa_test.py --mode best_repeat --num-skills 5
 python test-phase/searchqa_test.py --mode top_k --num-skills 5
@@ -58,8 +91,10 @@ python test-phase/searchqa_test.py --mode vote_global --num-skills 5
 python test-phase/searchqa_test.py --mode vote_global_milp --num-skills 5
 python test-phase/searchqa_test.py --mode max_cover_milp --num-skills 5
 python test-phase/searchqa_test.py --mode best_max_cover_milp --num-skills 5
+```
 
-# self check
+## 261003 self command - self check
+```bash
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_190420_cover_numskills5 \
   --dataset searchqa
