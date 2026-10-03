@@ -24,6 +24,7 @@ mkdir -p data/raw/livemathematicianbench
 hf download LiveMathematicianBench/LiveMathematicianBench \
   --repo-type dataset \
   --local-dir data/raw/livemathematicianbench
+python scripts/materialize_livemathematicianbench.py
 
 mkdir -p data/raw/spreadsheetbench
 hf download KAKA22/SpreadsheetBench \
@@ -32,6 +33,7 @@ hf download KAKA22/SpreadsheetBench \
 tar -xzf \
   data/raw/spreadsheetbench/spreadsheetbench_verified_400.tar.gz \
   -C data
+python scripts/materialize_spreadsheetbench.py
 
 hf auth login
 mkdir -p data/raw/officeqa
