@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
+import math
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -258,6 +261,122 @@ def _validation_vote_score(
     return hard_total, soft_total
 
 
+def _complete_records(
+    results_path: Path, expected_ids: frozenset[str]
+) -> dict[str, dict] | None:
+    """Load a complete validation result file, or return None if incomplete."""
+    rows = load_jsonl(results_path)
+    records = {str(row["id"]): row for row in rows if row.get("id") is not None}
+    if len(records) != len(rows) or frozenset(records) != expected_ids:
+        return None
+    return records
+
+
+def _load_last_best_skill(root: Path, candidates: list[Candidate]) -> Candidate:
+    """Use the last complete validation run matching ``best_skill.md``."""
+    best_path = root / "best_skill.md"
+    if not best_path.is_file():
+        raise FileNotFoundError(f"best skill file not found: {best_path}")
+
+    expected_ids = load_expected_validation_ids()
+    best_hash = hashlib.sha256(best_path.read_bytes()).hexdigest()
+    matches: list[tuple[int, str, Path, dict[str, dict]]] = []
+    for source_index, (name, skill_path, results_path) in enumerate(candidate_sources(root)):
+        if hashlib.sha256(skill_path.read_bytes()).hexdigest() != best_hash:
+            continue
+        records = _complete_records(results_path, expected_ids)
+        if records is not None:
+            matches.append((source_index, name, results_path, records))
+
+    if not matches:
+        raise RuntimeError(
+            f"no complete valid_seen result matches best skill: {best_path}"
+        )
+
+    _, source_name, results_path, records = matches[-1]
+    correct_ids = frozenset(
+        question_id
+        for question_id, row in records.items()
+        if int(row.get("hard", 0) or 0) == 1
+    )
+    version = version_of(source_name)
+    log(
+        f"[select] best_skill={best_path} matched_runs={len(matches)} "
+        f"using_last={source_name} results={results_path} "
+        f"hard={len(correct_ids)}/{len(records)} "
+        f"acc={len(correct_ids) / max(len(records), 1):.4f}"
+    )
+    return Candidate(
+        name="best_skill",
+        skill_path=best_path,
+        validation_results_path=results_path,
+        records_by_id=records,
+        correct_ids=correct_ids,
+        version=version,
+    )
+
+
+def select_best_vote_global(
+    candidates: list[Candidate], num_skills: int, root: Path
+) -> list[Candidate]:
+    """Fix best_skill, then exhaustively optimise the remaining skill set."""
+    if num_skills <= 0 or num_skills > len(candidates):
+        raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
+
+    best = _load_last_best_skill(root, candidates)
+    best_hash = hashlib.sha256(best.skill_path.read_bytes()).hexdigest()
+    remaining = [
+        candidate
+        for candidate in candidates
+        if hashlib.sha256(candidate.skill_path.read_bytes()).hexdigest() != best_hash
+    ]
+    remaining.sort(key=lambda candidate: (candidate.version, candidate.name))
+    choose_count = num_skills - 1
+    if choose_count == 0:
+        return [best]
+    if choose_count > len(remaining):
+        raise ValueError(
+            f"num_skills={num_skills} requires {choose_count} remaining skills, "
+            f"but only {len(remaining)} are available"
+        )
+
+    handler = get_dataset_handler("searchqa")
+    total = math.comb(len(remaining), choose_count)
+    started = time.monotonic()
+    best_key: tuple[int, float] | None = None
+    best_combo: tuple[Candidate, ...] | None = None
+    question_count = len(best.records_by_id)
+
+    for completed, combo in enumerate(itertools.combinations(remaining, choose_count), 1):
+        hard_total, soft_total = _validation_vote_score([best, *combo], handler)
+        key = (hard_total, soft_total)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_combo = combo
+
+        if completed % 10 == 0 or completed == total:
+            elapsed = time.monotonic() - started
+            rate = completed / elapsed if elapsed > 0 else 0.0
+            eta = (total - completed) / rate if rate > 0 else 0.0
+            best_hard = f"{best_key[0]}/{question_count}" if best_key else "-"
+            best_soft = best_key[1] / max(question_count, 1) if best_key else 0.0
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log(
+                f"[{timestamp}] [select] best_vote_global "
+                f"{completed}/{total} elapsed={elapsed:.1f}s eta={eta:.1f}s "
+                f"best_hard={best_hard} best_soft={best_soft:.4f}"
+            )
+
+    assert best_combo is not None and best_key is not None
+    selected = [best, *best_combo]
+    log(
+        f"[select] best_vote_global selected={[candidate.name for candidate in selected]} "
+        f"vote_hard={best_key[0]}/{question_count} "
+        f"vote_soft={best_key[1] / max(question_count, 1):.4f}"
+    )
+    return selected
+
+
 def select_cover_vote_last(
     candidates: list[Candidate], num_skills: int
 ) -> list[Candidate]:
@@ -365,7 +484,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=("cover", "best_repeat", "top_k", "cover_vote_last"),
+        choices=("cover", "best_repeat", "top_k", "cover_vote_last", "best_vote_global"),
         default="cover",
     )
     parser.add_argument("--num-skills", type=int, required=True)
@@ -381,6 +500,7 @@ def main() -> None:
         "best_repeat": select_best_repeat,
         "top_k": select_top_k,
         "cover_vote_last": select_cover_vote_last,
+        "best_vote_global": lambda pool, count: select_best_vote_global(pool, count, root),
     }
     selected = selectors[args.mode](candidates, args.num_skills)
     sys.path.insert(0, str(REPO_ROOT))
