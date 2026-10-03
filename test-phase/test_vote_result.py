@@ -170,6 +170,16 @@ def score_mean(rows: list[dict], field: str) -> float:
     return sum(float(row.get(field, 0.0) or 0.0) for row in rows) / len(rows)
 
 
+def get_gold_answers(row: dict) -> list[str]:
+    """Read reference answers, including timeout rows' legacy field."""
+    gold_answers = row.get("gold_answers")
+    if not isinstance(gold_answers, list):
+        gold_answers = row.get("gold_answer", [])
+        if isinstance(gold_answers, str):
+            gold_answers = [gold_answers]
+    return [str(answer) for answer in gold_answers]
+
+
 def build_vote_row(
     question_id: str,
     skills: list[SkillResults],
@@ -177,12 +187,7 @@ def build_vote_row(
 ) -> dict:
     source_rows = [skill.rows_by_id[question_id] for skill in skills]
     first_row = source_rows[0]
-    gold_answers = first_row.get("gold_answers")
-    if not isinstance(gold_answers, list):
-        gold_answers = first_row.get("gold_answer", [])
-        if isinstance(gold_answers, str):
-            gold_answers = [gold_answers]
-    gold_answers = [str(answer) for answer in gold_answers]
+    gold_answers = get_gold_answers(first_row)
 
     answers: list[dict] = []
     vote_counts: Counter[str] = Counter()

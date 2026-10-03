@@ -30,6 +30,7 @@ from test_vote_result import (  # noqa: E402
     DatasetHandler,
     SkillResults,
     build_vote_row,
+    get_gold_answers,
     get_dataset_handler,
 )
 
@@ -405,6 +406,155 @@ def select_vote_global(candidates: list[Candidate], num_skills: int) -> list[Can
     )
 
 
+def select_vote_global_milp(
+    candidates: list[Candidate], num_skills: int
+) -> list[Candidate]:
+    """Select skills with a two-stage 0-1 MILP (hard first, soft second)."""
+    if num_skills <= 0 or num_skills > len(candidates):
+        raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
+    try:
+        import numpy as np
+        from scipy.optimize import Bounds, LinearConstraint, milp
+        from scipy.sparse import coo_matrix
+    except ImportError as exc:
+        raise RuntimeError(
+            "vote_global_milp requires scipy and numpy in the active SkillOpt environment"
+        ) from exc
+
+    handler = get_dataset_handler("searchqa")
+    ordered = sorted(candidates, key=lambda candidate: (candidate.version, candidate.name))
+    question_ids = sorted(ordered[0].records_by_id)
+    n_candidates = len(ordered)
+    log(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] preprocess 0/{n_candidates}")
+
+    answer_keys: list[list[str]] = []
+    answer_votes: list[list[list[int]]] = []
+    answer_scores: list[list[tuple[float, float]]] = []
+    for question_id in question_ids:
+        gold = get_gold_answers(ordered[0].records_by_id[question_id])
+        keys = {""}
+        per_candidate: list[str] = []
+        for candidate in ordered:
+            row = candidate.records_by_id[question_id]
+            answer = handler.extract_answer(row)
+            normalized = handler.normalize_answer(answer) if is_valid_vote(row, answer, handler) else ""
+            per_candidate.append(normalized)
+            if normalized:
+                keys.add(normalized)
+        ordered_keys = sorted(keys)
+        answer_keys.append(ordered_keys)
+        answer_votes.append(
+            [[1 if answer == key and key else 0 for answer in per_candidate] for key in ordered_keys]
+        )
+        answer_scores.append(
+            [
+                (0.0, 0.0)
+                if not key
+                else (
+                    float(handler.evaluate_answer(key, gold)["em"]),
+                    float(handler.evaluate_answer(key, gold)["f1"]),
+                )
+                for key in ordered_keys
+            ]
+        )
+    log(
+        f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] preprocess "
+        f"{n_candidates}/{n_candidates} questions={len(question_ids)}"
+    )
+
+    x_offset = 0
+    y_offsets: list[int] = []
+    variable_count = n_candidates
+    for keys in answer_keys:
+        y_offsets.append(variable_count)
+        variable_count += len(keys)
+    rows: list[int] = []
+    cols: list[int] = []
+    data: list[float] = []
+    lower: list[float] = []
+    upper: list[float] = []
+    row_id = 0
+    for j in range(n_candidates):
+        rows.append(row_id); cols.append(j); data.append(1.0)
+    lower.append(float(num_skills)); upper.append(float(num_skills)); row_id += 1
+    for q, keys in enumerate(answer_keys):
+        for a in range(len(keys)):
+            rows.append(row_id); cols.append(y_offsets[q] + a); data.append(1.0)
+        lower.append(1.0); upper.append(1.0); row_id += 1
+
+    big_m = float(num_skills + 1)
+    for q, keys in enumerate(answer_keys):
+        for a in range(len(keys)):
+            for b in range(len(keys)):
+                if a == b:
+                    continue
+                delta = 1.0 if a > b else 0.0
+                for j in range(n_candidates):
+                    coefficient = answer_votes[q][a][j] - answer_votes[q][b][j]
+                    if coefficient:
+                        rows.append(row_id); cols.append(j); data.append(float(coefficient))
+                rows.append(row_id); cols.append(y_offsets[q] + a); data.append(big_m)
+                lower.append(delta - big_m); upper.append(np.inf); row_id += 1
+
+    matrix = coo_matrix((data, (rows, cols)), shape=(row_id, variable_count)).tocsc()
+    constraints = LinearConstraint(matrix, np.asarray(lower), np.asarray(upper))
+    bounds = Bounds(np.zeros(variable_count), np.ones(variable_count))
+    integrality = np.ones(variable_count)
+    hard_objective = np.zeros(variable_count)
+    for q, scores in enumerate(answer_scores):
+        for a, (hard, _) in enumerate(scores):
+            hard_objective[y_offsets[q] + a] = -hard
+    log(
+        f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] model "
+        f"variables={variable_count} constraints={row_id} num_skills={num_skills}"
+    )
+    started = time.monotonic()
+    log(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] solve stage=hard started")
+    hard_result = milp(c=hard_objective, integrality=integrality, bounds=bounds,
+                       constraints=constraints, options={"disp": True})
+    log(
+        f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] solve stage=hard finished "
+        f"status={hard_result.status} success={hard_result.success} "
+        f"elapsed={time.monotonic() - started:.1f}s objective={-hard_result.fun if hard_result.fun is not None else None} "
+        f"bound={getattr(hard_result, 'mip_dual_bound', None)} gap={getattr(hard_result, 'mip_gap', None)}"
+    )
+    if not hard_result.success or hard_result.x is None:
+        raise RuntimeError(f"MILP hard stage failed: {hard_result.message}")
+    hard_optimum = int(round(-float(hard_result.fun)))
+    hard_fix = np.zeros((1, variable_count))
+    for q, scores in enumerate(answer_scores):
+        for a, (hard, _) in enumerate(scores):
+            hard_fix[0, y_offsets[q] + a] = hard
+    constraints_soft = [constraints, LinearConstraint(hard_fix, hard_optimum, hard_optimum)]
+    soft_objective = np.zeros(variable_count)
+    for q, scores in enumerate(answer_scores):
+        for a, (_, soft) in enumerate(scores):
+            soft_objective[y_offsets[q] + a] = -soft
+    started = time.monotonic()
+    log(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] solve stage=soft started hard_fixed={hard_optimum}")
+    soft_result = milp(c=soft_objective, integrality=integrality, bounds=bounds,
+                       constraints=constraints_soft, options={"disp": True})
+    log(
+        f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] solve stage=soft finished "
+        f"status={soft_result.status} success={soft_result.success} "
+        f"elapsed={time.monotonic() - started:.1f}s objective={-soft_result.fun if soft_result.fun is not None else None} "
+        f"bound={getattr(soft_result, 'mip_dual_bound', None)} gap={getattr(soft_result, 'mip_gap', None)}"
+    )
+    if not soft_result.success or soft_result.x is None:
+        raise RuntimeError(f"MILP soft stage failed: {soft_result.message}")
+    selected = [candidate for j, candidate in enumerate(ordered) if soft_result.x[j] > 0.5]
+    verified_hard, verified_soft = _validation_vote_score(selected, handler)
+    if verified_hard != hard_optimum:
+        raise RuntimeError(f"MILP verification mismatch: solver_hard={hard_optimum} verified_hard={verified_hard}")
+    log(
+        f"[{datetime.now():%Y-%m-%d %H:%M:%S}] [milp] verified "
+        f"selected={[candidate.name for candidate in selected]} "
+        f"vote_hard={verified_hard}/{len(question_ids)} "
+        f"vote_soft={verified_soft / max(len(question_ids), 1):.4f}"
+    )
+    return selected
+
+
 def select_cover_vote_last(
     candidates: list[Candidate], num_skills: int
 ) -> list[Candidate]:
@@ -519,6 +669,7 @@ def main() -> None:
             "cover_vote_last",
             "best_vote_global",
             "vote_global",
+            "vote_global_milp",
         ),
         default="cover",
     )
@@ -537,6 +688,7 @@ def main() -> None:
         "cover_vote_last": select_cover_vote_last,
         "best_vote_global": lambda pool, count: select_best_vote_global(pool, count, root),
         "vote_global": select_vote_global,
+        "vote_global_milp": select_vote_global_milp,
     }
     selected = selectors[args.mode](candidates, args.num_skills)
     sys.path.insert(0, str(REPO_ROOT))
