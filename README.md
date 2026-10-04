@@ -108,6 +108,13 @@ python test-phase/searchqa_test.py --mode best_max_cover_milp --num-skills 5
 ## 261003 self command - self check
 ```bash
 python test-phase/test_vote_result.py \
-  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_190420_cover_numskills5 \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_234948_vote_global_numskills5 \
   --dataset searchqa
+  
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_234948_vote_global_numskills5 \
+  --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315 \
+  --dataset searchqa \
+  --policy coalition \
+  --override-margin 0.05
 ```

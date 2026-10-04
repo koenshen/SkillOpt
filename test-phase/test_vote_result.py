@@ -15,6 +15,7 @@ Example::
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import sys
@@ -116,10 +117,34 @@ def discover_skill_dirs(input_root: Path) -> list[tuple[int, Path]]:
 
 
 def load_skill_results(input_root: Path) -> list[SkillResults]:
+    if not input_root.is_dir():
+        raise FileNotFoundError(f"input root does not exist or is not a directory: {input_root}")
     skills: list[SkillResults] = []
     expected_ids: set[str] | None = None
 
-    for rank, skill_dir in discover_skill_dirs(input_root):
+    # A previous vote run stores the selected skill source directories in
+    # selection.json.  Reuse those paths when input_root is the *_vote folder.
+    selection_path = input_root / "selection.json"
+    if not any(path.is_dir() and re.fullmatch(r"\d{3}_.+", path.name) for path in input_root.iterdir()):
+        if not selection_path.is_file():
+            raise RuntimeError(f"no ranked skill result directories found under {input_root}")
+        with selection_path.open(encoding="utf-8") as handle:
+            selection = json.load(handle)
+        selected_items = selection.get("skills") or selection.get("selected") or []
+        if not selected_items:
+            raise RuntimeError(f"selection.json has no selected skills: {selection_path}")
+        discovered = []
+        for item in selected_items:
+            source = Path(str(item["source"]))
+            if not source.is_dir() or not (source / "results.jsonl").is_file():
+                raise FileNotFoundError(f"selected skill results not found: {source}")
+            rank_match = re.match(r"(\d{3})_", str(item.get("name", "")))
+            rank = int(rank_match.group(1)) if rank_match else len(discovered) + 1
+            discovered.append((rank, source))
+    else:
+        discovered = discover_skill_dirs(input_root)
+
+    for rank, skill_dir in discovered:
         rows = load_jsonl(skill_dir / "results.jsonl")
         rows_by_id: dict[str, dict] = {}
         for row in rows:
@@ -257,8 +282,207 @@ def build_vote_row(
     }
 
 
-def default_output_root(input_root: Path) -> Path:
-    return input_root.with_name(input_root.name + "_vote")
+def _red(message: str) -> str:
+    return f"\033[31m{message}\033[0m"
+
+
+def _partition_key(groups: list[tuple[int, ...]], invalid: tuple[int, ...]) -> tuple:
+    return (tuple(sorted(groups)), tuple(sorted(invalid)))
+
+
+def _selected_gate_skills(
+    input_root: Path,
+    gate_root: Path,
+    test_skills: list[SkillResults],
+) -> list[SkillResults]:
+    """Load only the skills selected in the test output from SkillOpt gate data."""
+    selection_path = input_root / "selection.json"
+    if not selection_path.is_file():
+        raise FileNotFoundError(f"missing selection.json: {selection_path}")
+    with selection_path.open(encoding="utf-8") as handle:
+        selection = json.load(handle)
+    selected_items = selection.get("skills") or selection.get("selected") or []
+    selected_names = [str(item["name"]) for item in selected_items]
+    if len(selected_names) != len(test_skills):
+        raise ValueError(
+            f"selection.json has {len(selected_names)} skills but test has {len(test_skills)}"
+        )
+
+    # Reuse SearchQA's existing candidate discovery and best-skill matching.
+    try:
+        from searchqa_test import _load_last_best_skill, load_candidates
+    except ImportError as exc:
+        raise RuntimeError("coalition policy requires test-phase/searchqa_test.py") from exc
+
+    candidates = load_candidates(gate_root)
+    by_name = {candidate.name: candidate for candidate in candidates}
+    gate_candidates = []
+    for name in selected_names:
+        base_name = re.sub(r"^\d{3}_", "", name)
+        if base_name == "best_skill":
+            gate_candidates.append(_load_last_best_skill(gate_root, candidates))
+            continue
+        candidate = by_name.get(base_name)
+        if candidate is None:
+            raise ValueError(
+                f"selected skill {name} was not found in gate root {gate_root}"
+            )
+        gate_candidates.append(candidate)
+
+    result: list[SkillResults] = []
+    for rank, (test_skill, candidate) in enumerate(zip(test_skills, gate_candidates), 1):
+        result.append(
+            SkillResults(
+                rank=rank,
+                name=test_skill.name,
+                path=candidate.skill_path,
+                rows_by_id=candidate.records_by_id,
+            )
+        )
+    return result
+
+
+def _build_gate_stats(
+    gate_skills: list[SkillResults],
+    handler: DatasetHandler,
+) -> tuple[dict, dict]:
+    """Build exact-configuration and coalition reliability counts."""
+    exact: dict[tuple, list[int]] = {}
+    coalition: dict[tuple[int, ...], list[int]] = {}
+    question_ids = sorted(gate_skills[0].rows_by_id)
+    for question_id in question_ids:
+        source_rows = [skill.rows_by_id[question_id] for skill in gate_skills]
+        gold = get_gold_answers(source_rows[0])
+        groups_by_answer: dict[str, list[int]] = {}
+        invalid: list[int] = []
+        answers: list[str] = []
+        valid: list[bool] = []
+        for index, row in enumerate(source_rows):
+            answer = handler.extract_answer(row)
+            is_valid = is_valid_vote(row, answer, handler)
+            normalized = handler.normalize_answer(answer) if is_valid else ""
+            answers.append(answer)
+            valid.append(is_valid)
+            if is_valid:
+                groups_by_answer.setdefault(normalized, []).append(index)
+            else:
+                invalid.append(index)
+        groups = [tuple(sorted(indices)) for indices in groups_by_answer.values()]
+        partition = _partition_key(groups, tuple(invalid))
+        for group in groups:
+            answer = answers[group[0]]
+            correct = int(handler.evaluate_answer(answer, gold)["em"])
+            entry = exact.setdefault((partition, group), [0, 0])
+            entry[0] += 1
+            entry[1] += correct
+            for size in range(1, len(group) + 1):
+                for subset in itertools.combinations(group, size):
+                    entry = coalition.setdefault(tuple(subset), [0, 0])
+                    entry[0] += 1
+                    entry[1] += correct
+    return exact, coalition
+
+
+def _reliability_for_group(
+    group: tuple[int, ...],
+    partition: tuple,
+    exact: dict,
+    coalition: dict,
+) -> tuple[float | None, int, str]:
+    exact_entry = exact.get((partition, group))
+    if exact_entry and exact_entry[0] > 0:
+        return exact_entry[1] / exact_entry[0], exact_entry[0], "exact"
+    full_entry = coalition.get(group)
+    if full_entry and full_entry[0] > 0:
+        return full_entry[1] / full_entry[0], full_entry[0], "coalition"
+    for size in range(len(group) - 1, 0, -1):
+        entries = []
+        for subset in itertools.combinations(group, size):
+            entry = coalition.get(tuple(subset))
+            if entry and entry[0] > 0:
+                entries.append(entry)
+        if entries:
+            total = sum(entry[0] for entry in entries)
+            correct = sum(entry[1] for entry in entries)
+            return correct / total, total, f"subset_{size}"
+    return None, 0, "none"
+
+
+def _choose_coalition_answers(
+    row: dict,
+    exact: dict,
+    coalition: dict,
+    override_margin: float,
+) -> dict:
+    groups_by_key = {
+        key: tuple(
+            sorted(
+                index
+                for index, answer in enumerate(row["answers"])
+                if answer["valid_vote"] and answer["normalized_answer"] == key
+            )
+        )
+        for key in row["vote_counts"]
+    }
+    groups = sorted(groups_by_key.items(), key=lambda item: (-len(item[1]), item[1]))
+    invalid = tuple(index for index, answer in enumerate(row["answers"]) if not answer["valid_vote"])
+    partition = _partition_key([group for _, group in groups], invalid)
+    candidates = []
+    for key, group in groups:
+        score, support, level = _reliability_for_group(group, partition, exact, coalition)
+        candidates.append({"key": key, "group": group, "score": score, "support": support, "level": level})
+
+    majority_vote = max(row["vote_counts"].values()) if row["vote_counts"] else 0
+    majority_keys = [key for key, count in row["vote_counts"].items() if count == majority_vote]
+    majority_key = majority_keys[0] if majority_keys else ""
+    scored = [candidate for candidate in candidates if candidate["score"] is not None]
+    if not scored:
+        return {
+            "majority_answer": row["voted_answer"],
+            "majority_override_answer": row["voted_answer"],
+            "pure_reliability_answer": row["voted_answer"],
+            "coalition_candidates": candidates,
+            "overridden": False,
+        }
+
+    best_score = max(candidate["score"] for candidate in scored)
+    best = [candidate for candidate in scored if candidate["score"] == best_score]
+    majority_candidate = next((candidate for candidate in candidates if candidate["key"] == majority_key), None)
+    if len(best) > 1:
+        if len(majority_keys) > 1:
+            message = _red(
+                f"[coalition tie] id={row['id']} candidates="
+                f"{[candidate['key'] for candidate in best]} scores={best_score:.4f}"
+            )
+            print(message, file=sys.stderr, flush=True)
+            raise RuntimeError(f"unresolved coalition tie for question {row['id']}")
+        if majority_candidate in best:
+            pure_key = majority_key
+        else:
+            pure_key = majority_key
+    else:
+        pure_key = best[0]["key"]
+    pure_answer = next((item["answer"] for item in row["answers"] if item["normalized_answer"] == pure_key), row["voted_answer"])
+    override_answer = row["voted_answer"]
+    if majority_candidate and majority_candidate["score"] is not None:
+        challenger = next((candidate for candidate in scored if candidate["key"] == pure_key), None)
+        if challenger and pure_key != majority_key and challenger["score"] - majority_candidate["score"] > override_margin:
+            override_answer = pure_answer
+    return {
+        "majority_answer": row["voted_answer"],
+        "majority_override_answer": override_answer,
+        "pure_reliability_answer": pure_answer,
+        "coalition_candidates": candidates,
+        "overridden": override_answer != row["voted_answer"],
+    }
+
+
+def default_output_root(input_root: Path, policy: str) -> Path:
+    suffix = "_coalition" if policy == "coalition" else "_vote"
+    base_name = input_root.name
+    if base_name.endswith("_vote"):
+        base_name = base_name[: -len("_vote")]
+    return input_root.with_name(base_name + suffix)
 
 
 def main() -> None:
@@ -266,13 +490,24 @@ def main() -> None:
     parser.add_argument("--input-root", required=True)
     parser.add_argument("--dataset", required=True, choices=tuple(DATASET_HANDLERS))
     parser.add_argument("--output-root")
+    parser.add_argument("--gate-root")
+    parser.add_argument("--policy", choices=("majority", "coalition"), default="majority")
+    parser.add_argument("--override-margin", type=float)
     args = parser.parse_args()
+
+    if args.policy == "coalition":
+        if not args.gate_root:
+            parser.error("--gate-root is required with --policy coalition")
+        if args.override_margin is None:
+            parser.error("--override-margin is required with --policy coalition")
+        if args.override_margin < 0:
+            parser.error("--override-margin must be non-negative")
 
     input_root = Path(args.input_root).expanduser().resolve()
     output_root = (
         Path(args.output_root).expanduser().resolve()
         if args.output_root
-        else default_output_root(input_root)
+        else default_output_root(input_root, args.policy)
     )
     if output_root.exists():
         raise FileExistsError(
@@ -281,6 +516,12 @@ def main() -> None:
 
     handler = get_dataset_handler(args.dataset)
     skills = load_skill_results(input_root)
+    gate_skills = None
+    gate_stats = None
+    if args.policy == "coalition":
+        gate_root = Path(args.gate_root).expanduser().resolve()
+        gate_skills = _selected_gate_skills(input_root, gate_root, skills)
+        gate_stats = _build_gate_stats(gate_skills, handler)
     question_ids = sorted(skills[0].rows_by_id)
     log(f"[vote] dataset={args.dataset} skills={len(skills)} questions={len(question_ids)}")
 
@@ -291,6 +532,18 @@ def main() -> None:
     timeout_count = 0
     for question_id in question_ids:
         row = build_vote_row(question_id, skills, handler)
+        if args.policy == "coalition":
+            analysis = _choose_coalition_answers(
+                row,
+                gate_stats[0],
+                gate_stats[1],
+                args.override_margin,
+            )
+            row["coalition"] = analysis
+            for field in ("majority_override_answer", "pure_reliability_answer"):
+                evaluation = handler.evaluate_answer(analysis[field], row["gold_answers"])
+                row[f"{field}_hard"] = int(evaluation["em"])
+                row[f"{field}_soft"] = evaluation["f1"]
         vote_rows.append(row)
         if row["status"] == "tie":
             tie_count += 1
@@ -340,6 +593,15 @@ def main() -> None:
         "coverage": len(covered_ids) / max(len(question_ids), 1),
         "covered_questions": len(covered_ids),
     }
+    if args.policy == "coalition":
+        summary["coalition"] = {
+            "override_margin": args.override_margin,
+            "majority_override_hard": score_mean(vote_rows, "majority_override_answer_hard"),
+            "majority_override_soft": score_mean(vote_rows, "majority_override_answer_soft"),
+            "pure_reliability_hard": score_mean(vote_rows, "pure_reliability_answer_hard"),
+            "pure_reliability_soft": score_mean(vote_rows, "pure_reliability_answer_soft"),
+            "override_count": sum(1 for row in vote_rows if row["coalition"]["overridden"]),
+        }
     with (output_root / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
     with (output_root / "selection.json").open("w", encoding="utf-8") as handle:
@@ -356,6 +618,20 @@ def main() -> None:
             ensure_ascii=False,
             indent=2,
         )
+
+    if args.policy == "coalition":
+        with (output_root / "coalition_gate_stats.json").open("w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "gate_root": str(Path(args.gate_root).expanduser().resolve()),
+                    "skills": [skill.name for skill in gate_skills],
+                    "exact_configuration_count": len(gate_stats[0]),
+                    "coalition_count": len(gate_stats[1]),
+                },
+                handle,
+                ensure_ascii=False,
+                indent=2,
+            )
 
     log(
         f"[done] voted_hard={summary['voted']['hard']:.4f} "
