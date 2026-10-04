@@ -13,10 +13,8 @@ import itertools
 import json
 import math
 import os
-import re
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -26,149 +24,20 @@ TEST_PHASE_ROOT = Path(__file__).resolve().parent
 if str(TEST_PHASE_ROOT) not in sys.path:
     sys.path.insert(0, str(TEST_PHASE_ROOT))
 
-from test_vote_result import (  # noqa: E402
+from test_vote_result import build_vote_row  # noqa: E402
+from utils import (  # noqa: E402
+    Candidate,
     DatasetHandler,
     SkillResults,
-    build_vote_row,
-    get_gold_answers,
     get_dataset_handler,
+    get_gold_answers,
     is_valid_vote,
+    load_candidates,
+    load_jsonl,
+    load_last_best_skill as _load_last_best_skill,
+    log,
+    RESULT_ROOT,
 )
-
-
-RESULT_ROOT = REPO_ROOT / "outputs" / (
-    "skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315"
-)
-VALIDATION_IDS_PATH = REPO_ROOT / "data" / "searchqa_split" / "val" / "items.json"
-
-
-@dataclass(frozen=True)
-class Candidate:
-    name: str
-    skill_path: Path
-    validation_results_path: Path
-    records_by_id: dict[str, dict]
-    correct_ids: frozenset[str]
-    version: int
-
-    @property
-    def accuracy(self) -> float:
-        return len(self.correct_ids) / max(len(self.records_by_id), 1)
-
-
-def log(message: str) -> None:
-    print(message, flush=True)
-
-
-def load_jsonl(path: Path) -> list[dict]:
-    rows: list[dict] = []
-    with path.open(encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, 1):
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if not isinstance(row, dict):
-                raise ValueError(f"{path}:{line_number}: expected JSON object")
-            rows.append(row)
-    return rows
-
-
-def load_expected_validation_ids() -> frozenset[str]:
-    with VALIDATION_IDS_PATH.open(encoding="utf-8") as handle:
-        items = json.load(handle)
-    ids = {str(item["id"]) for item in items}
-    if not ids:
-        raise RuntimeError(f"empty validation split: {VALIDATION_IDS_PATH}")
-    return frozenset(ids)
-
-
-def version_of(name: str) -> int:
-    match = re.match(r"skill_v(\d+)", name)
-    return int(match.group(1)) if match else 10**9
-
-
-def final_skill_path(root: Path) -> Path | None:
-    state_path = root / "runtime_state.json"
-    if state_path.is_file():
-        with state_path.open(encoding="utf-8") as handle:
-            raw_path = json.load(handle).get("current_skill_path")
-        if raw_path:
-            path = Path(raw_path)
-            if path.is_file():
-                return path
-    return None
-
-
-def candidate_sources(root: Path) -> list[tuple[str, Path, Path]]:
-    """Discover source pairs; selection later enforces complete valid_seen IDs."""
-    sources: list[tuple[str, Path, Path]] = []
-
-    baseline_results = root / "selection_eval_baseline" / "results.jsonl"
-    baseline_skill = root / "skills" / "skill_v0000.md"
-    if baseline_results.is_file() and baseline_skill.is_file():
-        sources.append(("skill_v0000", baseline_skill, baseline_results))
-
-    for results_path in sorted((root / "steps").glob("step_*/selection_eval/results.jsonl")):
-        match = re.fullmatch(r"step_(\d+)", results_path.parent.parent.name)
-        if not match:
-            continue
-        step = int(match.group(1))
-        skill_path = results_path.parent.parent / "candidate_skill.md"
-        if skill_path.is_file():
-            sources.append((f"skill_v{step:04d}_step_candidate", skill_path, results_path))
-
-    final_results = root / "final_selection_eval" / "results.jsonl"
-    current_path = final_skill_path(root)
-    if final_results.is_file() and current_path is not None:
-        sources.append((f"skill_v{version_of(current_path.stem):04d}_final", current_path, final_results))
-    return sources
-
-
-def load_candidates(root: Path) -> list[Candidate]:
-    expected_ids = load_expected_validation_ids()
-    candidates: list[Candidate] = []
-    seen_hashes: dict[str, str] = {}
-
-    for name, skill_path, results_path in candidate_sources(root):
-        content_hash = hashlib.sha256(skill_path.read_bytes()).hexdigest()
-        if content_hash in seen_hashes:
-            log(f"[select] duplicate {name}; representative={seen_hashes[content_hash]}")
-            continue
-
-        rows = load_jsonl(results_path)
-        records_by_id = {str(row.get("id")): row for row in rows if row.get("id") is not None}
-        result_ids = frozenset(records_by_id)
-        if len(rows) != len(records_by_id) or result_ids != expected_ids:
-            log(
-                f"[select] skip {name}: incomplete validation results "
-                f"rows={len(rows)} unique_ids={len(result_ids)} expected={len(expected_ids)}"
-            )
-            continue
-
-        seen_hashes[content_hash] = name
-        correct_ids = frozenset(
-            question_id
-            for question_id, row in records_by_id.items()
-            if int(row.get("hard", 0)) == 1
-        )
-        candidate = Candidate(
-            name=name,
-            skill_path=skill_path,
-            validation_results_path=results_path,
-            records_by_id=records_by_id,
-            correct_ids=correct_ids,
-            version=version_of(name),
-        )
-        candidates.append(candidate)
-        log(
-            f"[select] loaded {name}: n={len(records_by_id)} "
-            f"hard={len(correct_ids)} acc={candidate.accuracy:.4f}"
-        )
-
-    if not candidates:
-        raise RuntimeError(f"no complete valid_seen candidates found under {root}")
-    return candidates
-
 
 def select_cover(candidates: list[Candidate], num_skills: int) -> list[Candidate]:
     if num_skills <= 0 or num_skills > len(candidates):
@@ -470,61 +339,6 @@ def _validation_vote_score(
     hard_total = sum(int(row["hard"]) for row in vote_rows)
     soft_total = sum(float(row["soft"]) for row in vote_rows)
     return hard_total, soft_total
-
-
-def _complete_records(
-    results_path: Path, expected_ids: frozenset[str]
-) -> dict[str, dict] | None:
-    """Load a complete validation result file, or return None if incomplete."""
-    rows = load_jsonl(results_path)
-    records = {str(row["id"]): row for row in rows if row.get("id") is not None}
-    if len(records) != len(rows) or frozenset(records) != expected_ids:
-        return None
-    return records
-
-
-def _load_last_best_skill(root: Path, candidates: list[Candidate]) -> Candidate:
-    """Use the last complete validation run matching ``best_skill.md``."""
-    best_path = root / "best_skill.md"
-    if not best_path.is_file():
-        raise FileNotFoundError(f"best skill file not found: {best_path}")
-
-    expected_ids = load_expected_validation_ids()
-    best_hash = hashlib.sha256(best_path.read_bytes()).hexdigest()
-    matches: list[tuple[int, str, Path, dict[str, dict]]] = []
-    for source_index, (name, skill_path, results_path) in enumerate(candidate_sources(root)):
-        if hashlib.sha256(skill_path.read_bytes()).hexdigest() != best_hash:
-            continue
-        records = _complete_records(results_path, expected_ids)
-        if records is not None:
-            matches.append((source_index, name, results_path, records))
-
-    if not matches:
-        raise RuntimeError(
-            f"no complete valid_seen result matches best skill: {best_path}"
-        )
-
-    _, source_name, results_path, records = matches[-1]
-    correct_ids = frozenset(
-        question_id
-        for question_id, row in records.items()
-        if int(row.get("hard", 0) or 0) == 1
-    )
-    version = version_of(source_name)
-    log(
-        f"[select] best_skill={best_path} matched_runs={len(matches)} "
-        f"using_last={source_name} results={results_path} "
-        f"hard={len(correct_ids)}/{len(records)} "
-        f"acc={len(correct_ids) / max(len(records), 1):.4f}"
-    )
-    return Candidate(
-        name="best_skill",
-        skill_path=best_path,
-        validation_results_path=results_path,
-        records_by_id=records,
-        correct_ids=correct_ids,
-        version=version,
-    )
 
 
 def _select_vote_combination(
