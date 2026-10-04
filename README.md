@@ -80,6 +80,16 @@ python scripts/train.py \
     model.target_backend=openai_compatible \
     model.optimizer=bailian/deepseek-v4-flash-0731 \
     model.target=bailian/deepseek-v4-flash-0731
+    
+python scripts/train.py \
+  --config configs/officeqa/default.yaml \
+  --cfg-options \
+    env.data_dirs=data/raw/officeqa/treasury_bulletins_parsed/transformed \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=bailian/deepseek-v4-flash-0731 \
+    model.target=bailian/deepseek-v4-flash-0731
 ```
 
 ## 261003 self command - # self test
