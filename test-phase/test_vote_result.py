@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Aggregate per-skill rollout results with answer voting.
 
-The script reads an existing multi-skill rollout directory.  It does not call
-the model or rerun any questions.  Dataset-specific answer extraction,
+The majority and coalition policies read existing rollout results only.  The
+rag policy additionally performs the explicitly requested retrieval and
+re-inference on disagreement questions.  Dataset-specific answer extraction,
 normalisation, and scoring live behind a small handler registry so that the
 voting pipeline can be reused for other datasets.
 
@@ -17,8 +18,12 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
+import os
 import re
 import sys
+import time
+import urllib.request
 from pathlib import Path
 
 
@@ -47,6 +52,41 @@ def score_mean(rows: list[dict], field: str) -> float:
     if not rows:
         return 0.0
     return sum(float(row.get(field, 0.0) or 0.0) for row in rows) / len(rows)
+
+
+def _candidate_groups(row: dict) -> list[tuple[str, tuple[int, ...]]]:
+    groups = []
+    for key in row["vote_counts"]:
+        members = tuple(
+            sorted(
+                index
+                for index, answer in enumerate(row["answers"])
+                if answer["valid_vote"] and answer["normalized_answer"] == key
+            )
+        )
+        groups.append((key, members))
+    return sorted(groups, key=lambda item: (-len(item[1]), item[1]))
+
+
+def _choose_scored_answer(row: dict, scores: dict[str, float | None]) -> tuple[str, dict]:
+    """Choose a scored candidate while preserving the existing majority fallback."""
+    candidates = [
+        (key, score)
+        for key, _ in _candidate_groups(row)
+        if (score := scores.get(key)) is not None
+    ]
+    if not candidates:
+        return row["voted_answer"], {"score": None, "support": 0, "fallback": "majority"}
+    best_score = max(score for _, score in candidates)
+    best = [key for key, score in candidates if score == best_score]
+    if len(best) != 1:
+        return row["voted_answer"], {"score": best_score, "support": 0, "fallback": "majority", "score_tie": True}
+    key = best[0]
+    answer = next(
+        (item["answer"] for item in row["answers"] if item["normalized_answer"] == key),
+        row["voted_answer"],
+    )
+    return answer, {"score": best_score, "support": 0, "fallback": None, "score_tie": False}
 
 
 def build_vote_row(
@@ -309,8 +349,301 @@ def _choose_coalition_answers(
     }
 
 
+def _gate_correctness(
+    gate_skills: list[SkillResults], handler: DatasetHandler
+) -> tuple[list[str], dict[str, list[int]]]:
+    question_ids = sorted(gate_skills[0].rows_by_id)
+    correctness = {skill.name: [] for skill in gate_skills}
+    for question_id in question_ids:
+        gold = get_gold_answers(gate_skills[0].rows_by_id[question_id])
+        for skill in gate_skills:
+            row = skill.rows_by_id[question_id]
+            answer = handler.extract_answer(row)
+            valid = is_valid_vote(row, answer, handler)
+            correctness[skill.name].append(
+                int(valid and handler.evaluate_answer(answer, gold)["em"])
+            )
+    return question_ids, correctness
+
+
+def _required_env(names: tuple[str, ...]) -> dict[str, str]:
+    values = {name: os.environ.get(name, "").strip() for name in names}
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise RuntimeError("missing required environment variable(s): " + ", ".join(missing))
+    return values
+
+
+def _retry_request(operation, label: str, stats: dict):
+    """Initial request plus five retries; the caller decides the fallback."""
+    for attempt in range(6):
+        stats["attempts"] += 1
+        if attempt:
+            stats["retries"] += 1
+            log(f"[{label}] retry={attempt}/5 starting")
+        try:
+            return operation()
+        except Exception as exc:
+            # Avoid printing HTTP headers/bodies, which may contain credentials.
+            log(f"[{label}] attempt={attempt + 1}/6 failed ({type(exc).__name__})")
+            if attempt < 5:
+                time.sleep(min(2 * (attempt + 1), 10))
+    stats["exhausted"] += 1
+    log(f"[{label}] five retries exhausted")
+    return None
+
+
+def _embedding(text: str, env: dict[str, str], label: str, stats: dict):
+    def request_embedding():
+        request = urllib.request.Request(
+            env["EMBEDDING_BASE_URL"],
+            data=json.dumps({"model": env["EMBEDDING_MODEL"], "input": text}).encode("utf-8"),
+            headers={"Authorization": f"Bearer {env['EMBEDDING_API_KEY']}",
+                     "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        data = body["data"]
+        if len(data) != 1:
+            raise ValueError("expected one embedding")
+        vector = [float(value) for value in data[0]["embedding"]]
+        if not vector or not all(math.isfinite(value) for value in vector):
+            raise ValueError("invalid embedding")
+        norm = math.sqrt(sum(value * value for value in vector))
+        if not norm:
+            raise ValueError("zero embedding")
+        return [value / norm for value in vector]
+    return _retry_request(request_embedding, f"embedding {label}", stats)
+
+
+def _top_gate_indices(query: list[float], vectors: list[list[float]], k: int) -> list[int]:
+    if any(len(vector) != len(query) for vector in vectors):
+        raise ValueError("embedding dimensions differ")
+    # Vectors are normalised: their dot product is cosine similarity.
+    return sorted(range(len(vectors)),
+                  key=lambda i: (-sum(a * b for a, b in zip(query, vectors[i])), i))[:k]
+
+
+def _reliability_answers(row: dict, reliabilities: list[float]) -> dict:
+    groups = _candidate_groups(row)
+    output = {}
+    for mode in ("max", "mean"):
+        scores = {}
+        for key, members in groups:
+            values = [reliabilities[index] for index in members]
+            scores[key] = max(values) if mode == "max" else sum(values) / len(values)
+        answer, detail = _choose_scored_answer(row, scores)
+        output[mode] = (answer, {**detail, "candidate_scores": scores})
+    return output
+
+
+def _source_selection(input_root: Path) -> tuple[Path, dict]:
+    """Follow aggregated outputs back to the existing rollout selection."""
+    seen = set()
+    while input_root not in seen:
+        seen.add(input_root)
+        with (input_root / "selection.json").open(encoding="utf-8") as handle:
+            selection = json.load(handle)
+        if selection.get("selected"):
+            return input_root, selection
+        source = selection.get("input_root")
+        if not source:
+            break
+        input_root = Path(source).expanduser().resolve()
+    raise ValueError("cannot locate original rollout selection.json")
+
+
+def _with_method_answer(row: dict, answer: str, method: str,
+                        handler: DatasetHandler, detail: dict) -> dict:
+    result = dict(row)
+    result["base_voted_answer"] = row["voted_answer"]
+    result["base_hard"] = row["hard"]
+    result["voted_answer"] = answer
+    result["method"] = method
+    result["decision"] = detail
+    evaluation = handler.evaluate_answer(answer, row["gold_answers"])
+    result.update(em=evaluation["em"], f1=evaluation["f1"],
+                  sub_em=evaluation["sub_em"], hard=int(evaluation["em"]),
+                  soft=evaluation["f1"])
+    return result
+
+
+def _rerun_one_skill(adapter, item: dict, skill: SkillResults, content: str,
+                     examples: str, handler: DatasetHandler, out_dir: Path) -> dict:
+    stats = {"attempts": 0, "retries": 0, "exhausted": 0,
+             "timeout_count": 0, "error_count": 0}
+    def run():
+        attempt_dir = out_dir / f"attempt_{stats['attempts']:02d}"
+        # Reuse SearchQA's existing diagnostic prompt path so the examples are
+        # appended to the user prompt while the selected skill stays unchanged.
+        try:
+            results = adapter.rollout(
+                [item], content, str(attempt_dir), diagnostic_mode=True,
+                diagnostic_instruction=examples,
+            )
+        except Exception as exc:
+            timeout = "timeout" in str(exc).lower() or isinstance(exc, TimeoutError)
+            stats["timeout_count" if timeout else "error_count"] += 1
+            raise
+        if len(results) != 1:
+            stats["error_count"] += 1
+            raise RuntimeError("expected one rollout result")
+        row = results[0]
+        if not is_valid_vote(row, handler.extract_answer(row), handler):
+            timeout = row.get("phase") == "timeout" or "timeout" in str(row.get("fail_reason", "")).lower()
+            stats["timeout_count" if timeout else "error_count"] += 1
+            raise RuntimeError("invalid rollout answer")
+        return row
+    result = _retry_request(run, f"rag id={item['id']} skill={skill.rank}", stats)
+    if result is None:
+        log(f"[rag] id={item['id']} skill={skill.rank}: excluded as invalid vote")
+        result = {"id": str(item["id"]), "question": item["question"],
+                  "gold_answers": item.get("answers", []), "predicted_answer": "",
+                  "phase": "error", "agent_ok": False}
+    return {**result, "request_stats": stats}
+
+
+def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
+                    skills: list[SkillResults], base_rows: list[dict],
+                    handler: DatasetHandler, cfg: dict,
+                    output_root: Path) -> tuple[dict, dict]:
+    from concurrent.futures import ThreadPoolExecutor
+    import hashlib
+    from scripts.eval_only import get_adapter
+    from searchqa_test import configure_runtime
+
+    embedding_env = _required_env(("EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL"))
+    configure_runtime(cfg)  # Reuse the same mandatory LLM environment variables.
+    adapter = get_adapter(cfg)
+    adapter.setup(cfg)
+    items_by_id = {str(item["id"]): item for item in
+                   adapter.build_eval_env(0, "valid_unseen", cfg.get("seed", 42))}
+    _, selection = _source_selection(input_root)
+    selected = selection["selected"]
+    if len(selected) != len(skills):
+        raise ValueError("selected skill count differs from rollout count")
+    contents = []
+    for item, gate_skill in zip(selected, gate_skills):
+        path = Path(item["skill_path"])
+        if hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(gate_skill.path.read_bytes()).digest():
+            raise ValueError(f"gate skill content mismatch: {gate_skill.name}")
+        contents.append(path.read_text(encoding="utf-8"))
+    gate_ids, correctness = _gate_correctness(gate_skills, handler)
+    k = len(skills)
+    if len(gate_ids) < k:
+        raise ValueError(f"gate questions={len(gate_ids)} smaller than K={k}")
+    missing = set(row["id"] for row in base_rows) - items_by_id.keys()
+    if missing:
+        raise ValueError(f"test IDs missing from dataset: {sorted(missing)}")
+    # No disk cache: embeddings are requested anew for each execution.
+    # Preserve gate record order for exact similarity ties.
+    ordered_ids = list(gate_skills[0].rows_by_id)
+    correctness_index = {qid: index for index, qid in enumerate(gate_ids)}
+    gate_ids = ordered_ids
+    matrix = [[correctness[skill.name][correctness_index[qid]] for qid in gate_ids]
+              for skill in gate_skills]
+    global_reliability = [sum(values) / len(gate_ids) for values in matrix]
+    embedding_stats = {"attempts": 0, "retries": 0, "exhausted": 0}
+    disagreement_count = sum(len(row["vote_counts"]) > 1 for row in base_rows)
+    output_root.mkdir(parents=True, exist_ok=False)
+    gate_vectors = []
+    if disagreement_count:
+        for index, qid in enumerate(gate_ids, 1):
+            vector = _embedding(gate_skills[0].rows_by_id[qid]["question"],
+                                embedding_env, f"gate {index}/{len(gate_ids)}", embedding_stats)
+            if vector is None:
+                gate_vectors = None
+                log("[rag] gate embedding failed; QA-RAG and local methods fallback to majority")
+                break
+            gate_vectors.append(vector)
+            log(f"[embedding] gate {index}/{len(gate_ids)} completed")
+    output = {name: [] for name in ("rag", "global_max", "global_mean", "local_max", "local_mean")}
+    processed = 0
+    # Each disagreement question runs its K skills in parallel, with the original
+    # adapter's worker limit. Every attempt has its own output directory.
+    with ThreadPoolExecutor(max_workers=max(1, min(k, adapter.workers))) as executor:
+        for row in base_rows:
+            decisions = {name: (row["voted_answer"], {"fallback": None, "reason": "unchanged"})
+                         for name in output}
+            if len(row["vote_counts"]) > 1:
+                processed += 1
+                log(f"[rag] disagreement {processed}/{disagreement_count} id={row['id']}")
+                global_decisions = _reliability_answers(row, global_reliability)
+                for mode in ("max", "mean"):
+                    decisions[f"global_{mode}"] = global_decisions[mode]
+                query = (_embedding(row["question"], embedding_env, f"test id={row['id']}", embedding_stats)
+                         if gate_vectors is not None else None)
+                if query is None:
+                    log(f"[rag] id={row['id']}: embedding unavailable; local and QA-RAG fallback to original majority")
+                    for name in ("rag", "local_max", "local_mean"):
+                        decisions[name] = (row["voted_answer"], {"fallback": "majority", "reason": "embedding_failure"})
+                else:
+                    indices = _top_gate_indices(query, gate_vectors, k)
+                    neighbours = [gate_ids[index] for index in indices]
+                    local_reliability = [sum(values[index] for index in indices) / k for values in matrix]
+                    local_decisions = _reliability_answers(row, local_reliability)
+                    for mode in ("max", "mean"):
+                        answer, detail = local_decisions[mode]
+                        decisions[f"local_{mode}"] = (answer, {**detail, "gate_ids": neighbours,
+                                                              "skill_reliabilities": local_reliability})
+                    examples = "\n\n".join(
+                        f"Example question:\n{gate_skills[0].rows_by_id[qid]['question']}\n\n"
+                        f"Example answer:\n{get_gold_answers(gate_skills[0].rows_by_id[qid])[0]}"
+                        for qid in neighbours)
+                    futures = [executor.submit(
+                        _rerun_one_skill, adapter, items_by_id[row["id"]], skill, content,
+                        examples, handler, output_root / "reinference" / f"{skill.rank:03d}_{skill.name}" / row["id"])
+                        for skill, content in zip(skills, contents)]
+                    reruns = [future.result() for future in futures]
+                    temporary = [SkillResults(skill.rank, skill.name, skill.path, {row["id"]: result})
+                                 for skill, result in zip(skills, reruns)]
+                    new_vote = build_vote_row(row["id"], temporary, handler)
+                    exhausted = new_vote["status"] == "no_vote"
+                    if exhausted:
+                        log(f"[rag] id={row['id']}: all reinferences failed; fallback to original majority")
+                    # Failed skills remain invalid votes; all failures fall back.
+                    decisions["rag"] = (
+                        row["voted_answer"] if exhausted else new_vote["voted_answer"],
+                        {"fallback": "majority" if exhausted else None, "gate_ids": neighbours,
+                         "new_vote": new_vote, "rollout_results": reruns})
+            for name, (answer, detail) in decisions.items():
+                output[name].append(_with_method_answer(row, answer, name, handler, detail))
+    return output, {"embedding": embedding_stats, "L": k,
+                    "disagreement_count": disagreement_count,
+                    "global_skill_reliabilities": global_reliability,
+                    "embedding_model": embedding_env["EMBEDDING_MODEL"],
+                    "inference_model": os.environ["OPENAI_COMPATIBLE_MODEL"]}
+
+
+def _method_summary(rows: list[dict]) -> dict:
+    disagreement = [row for row in rows if len(row["vote_counts"]) > 1]
+    unanimous = [row for row in rows if row["vote_count"] == len(row["answers"])]
+    reruns = [result for row in rows for result in row["decision"].get("rollout_results", [])]
+    return {
+        "hard": score_mean(rows, "hard"), "soft": score_mean(rows, "soft"),
+        "disagreement_count": len(disagreement),
+        "disagreement_hard": score_mean(disagreement, "hard"),
+        "disagreement_soft": score_mean(disagreement, "soft"),
+        "unanimous_count": len(unanimous),
+        "unanimous_hard": score_mean(unanimous, "hard"),
+        "unanimous_soft": score_mean(unanimous, "soft"),
+        "changed_from_majority": sum(row["voted_answer"] != row["base_voted_answer"] for row in rows),
+        "unchanged": sum(row["voted_answer"] == row["base_voted_answer"] for row in rows),
+        "rescue": sum(not row["base_hard"] and row["hard"] for row in rows),
+        "harm": sum(row["base_hard"] and not row["hard"] for row in rows),
+        "fallback_count": sum(row["decision"].get("fallback") == "majority" for row in rows),
+        "score_tie_count": sum(bool(row["decision"].get("score_tie")) for row in rows),
+        "reinference_count": len(reruns),
+        "retry_count": sum(result["request_stats"]["retries"] for result in reruns),
+        "timeout_count": sum(result["request_stats"]["timeout_count"] for result in reruns),
+        "error_count": sum(result["request_stats"]["error_count"] for result in reruns),
+        "exhausted_count": sum(result["request_stats"]["exhausted"] for result in reruns),
+    }
+
+
 def default_output_root(input_root: Path, policy: str) -> Path:
-    suffix = "_coalition" if policy == "coalition" else "_vote"
+    suffix = {"coalition": "_coalition", "rag": "_rag"}.get(policy, "_vote")
     base_name = input_root.name
     if base_name.endswith("_vote"):
         base_name = base_name[: -len("_vote")]
@@ -323,13 +656,18 @@ def main() -> None:
     parser.add_argument("--dataset", required=True, choices=tuple(DATASET_HANDLERS))
     parser.add_argument("--output-root")
     parser.add_argument("--gate-root")
-    parser.add_argument("--policy", choices=("majority", "coalition"), default="majority")
+    parser.add_argument("--policy", choices=("majority", "coalition", "rag"), default="majority")
     parser.add_argument("--override-margin", type=float)
     args = parser.parse_args()
 
-    if args.policy == "coalition":
+    if args.policy in {"coalition", "rag"}:
         if not args.gate_root:
-            parser.error("--gate-root is required with --policy coalition")
+            if args.policy == "rag":
+                _, selection = _source_selection(Path(args.input_root).expanduser().resolve())
+                args.gate_root = selection.get("source_result_root")
+            if not args.gate_root:
+                parser.error("--gate-root is required when the source selection does not identify gate data")
+    if args.policy == "coalition":
         if args.override_margin is None:
             parser.error("--override-margin is required with --policy coalition")
         if args.override_margin < 0:
@@ -350,10 +688,11 @@ def main() -> None:
     skills = load_skill_results(input_root)
     gate_skills = None
     gate_stats = None
-    if args.policy == "coalition":
+    if args.policy in {"coalition", "rag"}:
         gate_root = Path(args.gate_root).expanduser().resolve()
         gate_skills = _selected_gate_skills(input_root, gate_root, skills)
-        gate_stats = _build_gate_stats(gate_skills, handler)
+        if args.policy == "coalition":
+            gate_stats = _build_gate_stats(gate_skills, handler)
     question_ids = sorted(skills[0].rows_by_id)
     log(f"[vote] dataset={args.dataset} skills={len(skills)} questions={len(question_ids)}")
 
@@ -388,10 +727,29 @@ def main() -> None:
         ):
             covered_ids.add(question_id)
 
-    output_root.mkdir(parents=True)
+    rag_outputs = None
+    rag_metadata = None
+    if args.policy == "rag":
+        gate_config_path = Path(args.gate_root).expanduser().resolve() / "config.json"
+        if not gate_config_path.is_file():
+            raise FileNotFoundError(f"missing gate config.json: {gate_config_path}")
+        with gate_config_path.open(encoding="utf-8") as handle:
+            gate_cfg = json.load(handle)
+        rag_outputs, rag_metadata = _run_rag_bundle(
+            input_root, gate_skills, skills, vote_rows, handler, gate_cfg, output_root
+        )
+
+    if args.policy != "rag":
+        output_root.mkdir(parents=True)
     with (output_root / "vote_results.jsonl").open("w", encoding="utf-8") as handle:
         for row in vote_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    if rag_outputs is not None:
+        for method, rows in rag_outputs.items():
+            with (output_root / f"{method}_results.jsonl").open("w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     per_skill = []
     for skill in skills:
@@ -434,6 +792,9 @@ def main() -> None:
             "pure_reliability_soft": score_mean(vote_rows, "pure_reliability_answer_soft"),
             "override_count": sum(1 for row in vote_rows if row["coalition"]["overridden"]),
         }
+    if args.policy == "rag":
+        summary["rag"] = {method: _method_summary(rows) for method, rows in rag_outputs.items()}
+        summary["rag_metadata"] = {**rag_metadata, "gate_root": str(Path(args.gate_root).resolve())}
     with (output_root / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
     with (output_root / "selection.json").open("w", encoding="utf-8") as handle:
