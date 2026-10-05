@@ -37,6 +37,10 @@ from utils import (  # noqa: E402
     load_last_best_skill as _load_last_best_skill,
     log,
     RESULT_ROOT,
+    select_best_repeat,
+    select_top_k,
+    configure_runtime,
+    candidate_metadata,
 )
 
 def select_cover(candidates: list[Candidate], num_skills: int) -> list[Candidate]:
@@ -62,43 +66,6 @@ def select_cover(candidates: list[Candidate], num_skills: int) -> list[Candidate
         log(
             f"[select] round={round_index}/{num_skills} skill={chosen.name} "
             f"gain={gain} remaining={len(remaining)}"
-        )
-    return selected
-
-
-def select_best_repeat(candidates: list[Candidate], num_skills: int) -> list[Candidate]:
-    """Return the valid_seen-best skill repeated ``num_skills`` times."""
-    if not candidates:
-        raise ValueError("cannot select from an empty candidate pool")
-    if num_skills <= 0:
-        raise ValueError(f"num_skills={num_skills}; expected a positive value")
-
-    best = max(
-        candidates,
-        key=lambda candidate: (len(candidate.correct_ids), -candidate.version),
-    )
-    log(
-        f"[select] best_repeat best={best.name} "
-        f"hard={len(best.correct_ids)} acc={best.accuracy:.4f} "
-        f"repetitions={num_skills}"
-    )
-    return [best] * num_skills
-
-
-def select_top_k(candidates: list[Candidate], num_skills: int) -> list[Candidate]:
-    """Return the top ``num_skills`` distinct candidates by valid_seen score."""
-    if num_skills <= 0 or num_skills > len(candidates):
-        raise ValueError(f"num_skills={num_skills} but candidates={len(candidates)}")
-
-    ranked = sorted(
-        candidates,
-        key=lambda candidate: (-len(candidate.correct_ids), candidate.version),
-    )
-    selected = ranked[:num_skills]
-    for rank, candidate in enumerate(selected, 1):
-        log(
-            f"[select] top_k rank={rank}/{num_skills} skill={candidate.name} "
-            f"hard={len(candidate.correct_ids)} acc={candidate.accuracy:.4f}"
         )
     return selected
 
@@ -666,60 +633,6 @@ def select_cover_vote_last(
         f"{[candidate.name for candidate in selected]}"
     )
     return selected
-
-
-def configure_runtime(cfg: dict) -> None:
-    """Configure the existing SkillOpt target runtime for this evaluation."""
-    from skillopt.model import (
-        configure_openai_compatible,
-        set_reasoning_effort,
-        set_target_backend,
-        set_target_deployment,
-    )
-
-    backend = cfg.get("target_backend", "openai_compatible")
-    base_url = os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "").strip()
-    api_key = os.environ.get("OPENAI_COMPATIBLE_API_KEY", "").strip()
-    model = os.environ.get("OPENAI_COMPATIBLE_MODEL", "").strip()
-    missing = [
-        name
-        for name, value in (
-            ("OPENAI_COMPATIBLE_BASE_URL", base_url),
-            ("OPENAI_COMPATIBLE_API_KEY", api_key),
-            ("OPENAI_COMPATIBLE_MODEL", model),
-        )
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(
-            "missing required environment variable(s): " + ", ".join(missing)
-        )
-    if backend != "openai_compatible":
-        raise RuntimeError(
-            f"config target_backend={backend!r}; expected 'openai_compatible'"
-        )
-
-    set_target_backend(backend)
-    set_target_deployment(model)
-    set_reasoning_effort(cfg.get("reasoning_effort") or None)
-    configure_openai_compatible(
-        target_base_url=base_url,
-        target_api_key=api_key,
-        target_model=model,
-        max_tokens=cfg.get("max_completion_tokens"),
-    )
-
-
-def candidate_metadata(candidate: Candidate) -> dict:
-    return {
-        "name": candidate.name,
-        "skill_path": str(candidate.skill_path),
-        "validation_results_path": str(candidate.validation_results_path),
-        "version": candidate.version,
-        "validation_n": len(candidate.records_by_id),
-        "validation_hard": len(candidate.correct_ids),
-        "validation_hard_accuracy": candidate.accuracy,
-    }
 
 
 def main() -> None:

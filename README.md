@@ -107,6 +107,22 @@ python test-phase/searchqa_test.py --mode vote_global --num-skills 5
 python test-phase/searchqa_test.py --mode vote_global_milp --num-skills 5
 python test-phase/searchqa_test.py --mode max_cover_milp --num-skills 5
 python test-phase/searchqa_test.py --mode best_max_cover_milp --num-skills 5
+
+export ALFWORLD_DATA="$HOME/.cache/alfworld"
+python test-phase/alfworld_test.py \
+  --input-root outputs/skillopt_alfworld_bailian-deepseek-v4-flash-0731_20261004_030059 \
+  --mode best_repeat \
+  --num-skills 5
+  
+python test-phase/spreadsheetbench_test.py \
+  --input-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261004_035613 \
+  --mode top_k \
+  --num-skills 5
+  
+python test-phase/officeqa_test.py \
+  --input-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261005_040355 \
+  --mode top_k \
+  --num-skills 5
 ```
 
 ## 261003 self command - self check
@@ -129,10 +145,17 @@ python test-phase/test_vote_result.py \
   --policy rag \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
 
-# ablation: re-generate questions with divergent answers without few-shot
+# ablation with rag: re-generate questions with divergent answers without few-shot
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261006_021120_top_k_numskills3 \
   --dataset searchqa \
   --policy no_rag \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
+  
+# ablation with rag: three stage round by k=k
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261006_021120_top_k_numskills3 \
+  --dataset searchqa \
+  --policy rag_matrix \
+  --matrix-samples 5
 ```

@@ -509,10 +509,19 @@ def _rerun_one_skill(adapter, item: dict, skill: SkillResults, content: str,
     return {**result, "request_stats": stats}
 
 
+def _is_unanimous_vote(row: dict, skill_count: int) -> bool:
+    return (
+        row.get("status") not in {"tie", "no_vote"}
+        and row.get("valid_vote_count") == skill_count
+        and row.get("vote_count") == skill_count
+    )
+
+
 def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     skills: list[SkillResults], base_rows: list[dict],
                     handler: DatasetHandler, cfg: dict,
-                    output_root: Path, use_rag: bool = True) -> tuple[dict, dict]:
+                    output_root: Path, use_rag: bool = True,
+                    matrix_mode: bool = False, matrix_samples: int = 1) -> tuple[dict, dict]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import hashlib
     from scripts.eval_only import get_adapter
@@ -579,9 +588,12 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
             gate_vectors.append(vector)
             log(f"[embedding] gate {index}/{len(ordered_gate_ids)} completed")
 
+    if matrix_mode and not use_rag:
+        raise ValueError("matrix_mode requires use_rag=True")
     output = (
         {name: [] for name in ("rag", "global_max", "global_mean", "local_max", "local_mean")}
-        if use_rag else {"no_rag": []}
+        if use_rag and not matrix_mode else
+        {"rag_matrix": []} if matrix_mode else {"no_rag": []}
     )
     contexts: dict[str, dict] = {}
     mode_label = "rag" if use_rag else "no_rag"
@@ -661,6 +673,61 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
             if completed % max(1, len(skills)) == 0 or completed == len(future_map):
                 log(f"[rag] reinference tasks {completed}/{len(future_map)} completed")
 
+    third_reruns_by_question: dict[str, dict[tuple[int, int], dict]] = {}
+    third_questions: set[str] = set()
+    stage2_unanimous_questions: set[str] = set()
+    if matrix_mode:
+        # First inspect the second-round RAG vote. Only non-unanimous cases
+        # receive the additional K * matrix_samples rollouts.
+        for question_id, context in contexts.items():
+            if not context["run_rag"]:
+                continue
+            reruns = [
+                reruns_by_question[question_id][skill.rank]
+                for skill in skills
+            ]
+            temporary = [
+                SkillResults(skill.rank, skill.name, skill.path, {question_id: result})
+                for skill, result in zip(skills, reruns)
+            ]
+            second_vote = build_vote_row(question_id, temporary, handler)
+            context["second_vote"] = second_vote
+            if _is_unanimous_vote(second_vote, len(skills)):
+                stage2_unanimous_questions.add(question_id)
+            else:
+                third_questions.add(question_id)
+
+        third_future_map = {}
+        with ThreadPoolExecutor(max_workers=max(1, int(adapter.workers))) as executor:
+            for question_id in third_questions:
+                context = contexts[question_id]
+                for skill, content in zip(skills, contents):
+                    for sample_index in range(matrix_samples):
+                        future = executor.submit(
+                            _rerun_one_skill,
+                            adapter,
+                            context["item"],
+                            skill,
+                            content,
+                            context["examples"],
+                            handler,
+                            output_root / "reinference" / "stage3"
+                            / f"{skill.rank:03d}_{skill.name}"
+                            / question_id / f"sample_{sample_index + 1:02d}",
+                            "rag_matrix",
+                        )
+                        third_future_map[future] = (question_id, skill.rank, sample_index)
+            for completed, future in enumerate(as_completed(third_future_map), 1):
+                question_id, rank, sample_index = third_future_map[future]
+                third_reruns_by_question.setdefault(question_id, {})[(rank, sample_index)] = future.result()
+                if completed % max(1, len(skills)) == 0 or completed == len(third_future_map):
+                    log(
+                        f"[rag_matrix] stage3 tasks "
+                        f"{completed}/{len(third_future_map)} completed"
+                    )
+    else:
+        third_future_map = {}
+
     for row in base_rows:
         decisions = {
             name: (row["voted_answer"], {"fallback": None, "reason": "unchanged"})
@@ -682,16 +749,71 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                 exhausted = new_vote["status"] == "no_vote"
                 if exhausted:
                     log(f"[{ 'rag' if use_rag else 'no_rag' }] id={row['id']}: all reinferences failed; fallback to original majority")
-                method_name = "rag" if use_rag else "no_rag"
-                decisions[method_name] = (
-                    row["voted_answer"] if exhausted else new_vote["voted_answer"],
-                    {"fallback": "majority" if exhausted else None,
-                     **({"gate_ids": context["neighbours"]} if use_rag else {}),
-                     "new_vote": new_vote,
-                     "rollout_results": reruns},
-                )
+                if matrix_mode:
+                    second_vote = context["second_vote"]
+                    if _is_unanimous_vote(second_vote, len(skills)):
+                        final_answer = second_vote["voted_answer"]
+                        detail = {
+                            "stage": 2,
+                            "stop_reason": "rag_unanimous",
+                            "fallback": None,
+                            "gate_ids": context["neighbours"],
+                            "second_vote": second_vote,
+                            "rollout_results": reruns,
+                        }
+                    else:
+                        third_reruns = [
+                            third_reruns_by_question[row["id"]][(skill.rank, sample_index)]
+                            for skill in skills
+                            for sample_index in range(matrix_samples)
+                        ]
+                        third_temporary = [
+                            SkillResults(
+                                skill.rank * 100000 + sample_index,
+                                f"{skill.name}__sample_{sample_index + 1:02d}",
+                                skill.path,
+                                {
+                                    row["id"]: third_reruns_by_question[row["id"]][
+                                        (skill.rank, sample_index)
+                                    ]
+                                },
+                            )
+                            for skill in skills
+                            for sample_index in range(matrix_samples)
+                        ]
+                        third_vote = build_vote_row(row["id"], third_temporary, handler)
+                        third_exhausted = third_vote["status"] == "no_vote"
+                        final_answer = (
+                            second_vote["voted_answer"]
+                            if third_exhausted else third_vote["voted_answer"]
+                        )
+                        if third_exhausted:
+                            log(
+                                f"[rag_matrix] id={row['id']}: all stage3 reinferences "
+                                "failed; fallback to stage2 RAG vote"
+                            )
+                        detail = {
+                            "stage": 2 if third_exhausted else 3,
+                            "stop_reason": "stage3_no_vote" if third_exhausted else "stage3_vote",
+                            "fallback": "stage2_rag" if third_exhausted else None,
+                            "gate_ids": context["neighbours"],
+                            "second_vote": second_vote,
+                            "third_vote": third_vote,
+                            "rollout_results": reruns + third_reruns,
+                        }
+                    decisions["rag_matrix"] = (final_answer, detail)
+                else:
+                    method_name = "rag" if use_rag else "no_rag"
+                    decisions[method_name] = (
+                        row["voted_answer"] if exhausted else new_vote["voted_answer"],
+                        {"fallback": "majority" if exhausted else None,
+                         **({"gate_ids": context["neighbours"]} if use_rag else {}),
+                         "new_vote": new_vote,
+                         "rollout_results": reruns},
+                    )
             else:
-                decisions["rag"] = (
+                method_name = "rag_matrix" if matrix_mode else "rag"
+                decisions[method_name] = (
                     row["voted_answer"],
                     {"fallback": "majority", "reason": "embedding_failure"},
                 )
@@ -701,7 +823,12 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
     return output, {
         "embedding": embedding_stats,
         "L": k,
+        "matrix_mode": matrix_mode,
+        "matrix_samples": matrix_samples if matrix_mode else None,
         "disagreement_count": len(disagreement),
+        "stage2_unanimous_count": len(stage2_unanimous_questions),
+        "stage3_question_count": len(third_questions),
+        "stage3_tasks": len(third_future_map),
         "global_skill_reliabilities": global_reliability,
         "embedding_model": embedding_env["EMBEDDING_MODEL"] if embedding_env else None,
         "inference_model": os.environ["OPENAI_COMPATIBLE_MODEL"],
@@ -736,7 +863,12 @@ def _method_summary(rows: list[dict]) -> dict:
 
 
 def default_output_root(input_root: Path, policy: str) -> Path:
-    suffix = {"coalition": "_coalition", "rag": "_rag", "no_rag": "_no_rag"}.get(policy, "_vote")
+    suffix = {
+        "coalition": "_coalition",
+        "rag": "_rag",
+        "no_rag": "_no_rag",
+        "rag_matrix": "_rag_matrix",
+    }.get(policy, "_vote")
     base_name = input_root.name
     if base_name.endswith("_vote"):
         base_name = base_name[: -len("_vote")]
@@ -749,13 +881,26 @@ def main() -> None:
     parser.add_argument("--dataset", required=True, choices=tuple(DATASET_HANDLERS))
     parser.add_argument("--output-root")
     parser.add_argument("--gate-root")
-    parser.add_argument("--policy", choices=("majority", "coalition", "rag", "no_rag"), default="majority")
+    parser.add_argument(
+        "--policy",
+        choices=("majority", "coalition", "rag", "no_rag", "rag_matrix"),
+        default="majority",
+    )
+    parser.add_argument("--matrix-samples", type=int)
     parser.add_argument("--override-margin", type=float)
     args = parser.parse_args()
 
-    if args.policy in {"coalition", "rag", "no_rag"}:
+    if args.policy == "rag_matrix":
+        if args.matrix_samples is None:
+            parser.error("--matrix-samples is required with --policy rag_matrix")
+        if args.matrix_samples <= 0:
+            parser.error("--matrix-samples must be positive")
+    elif args.matrix_samples is not None:
+        parser.error("--matrix-samples is only valid with --policy rag_matrix")
+
+    if args.policy in {"coalition", "rag", "no_rag", "rag_matrix"}:
         if not args.gate_root:
-            if args.policy in {"rag", "no_rag"}:
+            if args.policy in {"rag", "no_rag", "rag_matrix"}:
                 _, selection = _source_selection(Path(args.input_root).expanduser().resolve())
                 args.gate_root = selection.get("source_result_root")
             if not args.gate_root:
@@ -765,7 +910,6 @@ def main() -> None:
             parser.error("--override-margin is required with --policy coalition")
         if args.override_margin < 0:
             parser.error("--override-margin must be non-negative")
-
     input_root = Path(args.input_root).expanduser().resolve()
     output_root = (
         Path(args.output_root).expanduser().resolve()
@@ -781,7 +925,7 @@ def main() -> None:
     skills = load_skill_results(input_root)
     gate_skills = None
     gate_stats = None
-    if args.policy in {"coalition", "rag", "no_rag"}:
+    if args.policy in {"coalition", "rag", "no_rag", "rag_matrix"}:
         gate_root = Path(args.gate_root).expanduser().resolve()
         gate_skills = _selected_gate_skills(input_root, gate_root, skills)
         if args.policy == "coalition":
@@ -822,7 +966,7 @@ def main() -> None:
 
     rag_outputs = None
     rag_metadata = None
-    if args.policy in {"rag", "no_rag"}:
+    if args.policy in {"rag", "no_rag", "rag_matrix"}:
         gate_config_path = Path(args.gate_root).expanduser().resolve() / "config.json"
         if not gate_config_path.is_file():
             raise FileNotFoundError(f"missing gate config.json: {gate_config_path}")
@@ -830,10 +974,12 @@ def main() -> None:
             gate_cfg = json.load(handle)
         rag_outputs, rag_metadata = _run_rag_bundle(
             input_root, gate_skills, skills, vote_rows, handler, gate_cfg, output_root,
-            use_rag=args.policy == "rag",
+            use_rag=args.policy in {"rag", "rag_matrix"},
+            matrix_mode=args.policy == "rag_matrix",
+            matrix_samples=args.matrix_samples or 1,
         )
 
-    if args.policy not in {"rag", "no_rag"}:
+    if args.policy not in {"rag", "no_rag", "rag_matrix"}:
         output_root.mkdir(parents=True)
     with (output_root / "vote_results.jsonl").open("w", encoding="utf-8") as handle:
         for row in vote_rows:
@@ -886,7 +1032,7 @@ def main() -> None:
             "pure_reliability_soft": score_mean(vote_rows, "pure_reliability_answer_soft"),
             "override_count": sum(1 for row in vote_rows if row["coalition"]["overridden"]),
         }
-    if args.policy in {"rag", "no_rag"}:
+    if args.policy in {"rag", "no_rag", "rag_matrix"}:
         summary[args.policy] = {method: _method_summary(rows) for method, rows in rag_outputs.items()}
         summary[f"{args.policy}_metadata"] = {
             **rag_metadata, "gate_root": str(Path(args.gate_root).resolve())
