@@ -9,6 +9,10 @@ uv pip install -r requirements.txt
 export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
 export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
 export OPENAI_COMPATIBLE_MODEL="bailian/deepseek-v4-flash-0731"
+
+export EMBEDDING_BASE_URL="https://api.siliconflow.cn/v1/embeddings"
+export EMBEDDING_API_KEY="sk-xxx"
+export EMBEDDING_MODEL="BAAI/bge-m3"
 ```
 
 ## 261003 self command - data download
@@ -112,7 +116,7 @@ python test-phase/test_vote_result.py \
   --dataset searchqa
   
 python test-phase/test_vote_result.py \
-  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_234948_vote_global_numskills5 \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261004_015929_top_k_numskills9 \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315 \
   --dataset searchqa \
   --policy coalition \

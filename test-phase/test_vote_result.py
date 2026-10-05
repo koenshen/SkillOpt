@@ -251,8 +251,14 @@ def _choose_coalition_answers(
         candidates.append({"key": key, "group": group, "score": score, "support": support, "level": level})
 
     majority_vote = max(row["vote_counts"].values()) if row["vote_counts"] else 0
-    majority_keys = [key for key, count in row["vote_counts"].items() if count == majority_vote]
-    majority_key = majority_keys[0] if majority_keys else ""
+    majority_key = next(
+        (
+            key
+            for key, count in row["vote_counts"].items()
+            if count == majority_vote
+        ),
+        "",
+    )
     scored = [candidate for candidate in candidates if candidate["score"] is not None]
     if not scored:
         return {
@@ -261,30 +267,36 @@ def _choose_coalition_answers(
             "pure_reliability_answer": row["voted_answer"],
             "coalition_candidates": candidates,
             "overridden": False,
+            "coalition_score_tie": False,
+            "coalition_fallback": "majority",
         }
 
     best_score = max(candidate["score"] for candidate in scored)
     best = [candidate for candidate in scored if candidate["score"] == best_score]
     majority_candidate = next((candidate for candidate in candidates if candidate["key"] == majority_key), None)
-    if len(best) > 1:
-        if len(majority_keys) > 1:
-            message = _red(
-                f"[coalition tie] id={row['id']} candidates="
-                f"{[candidate['key'] for candidate in best]} scores={best_score:.4f}"
-            )
-            print(message, file=sys.stderr, flush=True)
-            raise RuntimeError(f"unresolved coalition tie for question {row['id']}")
-        if majority_candidate in best:
-            pure_key = majority_key
-        else:
-            pure_key = majority_key
+    score_tie = len(best) > 1
+    if score_tie:
+        # Reuse build_vote_row's existing majority and first-rank tie policy.
+        pure_answer = row["voted_answer"]
+        coalition_fallback = "majority"
     else:
         pure_key = best[0]["key"]
-    pure_answer = next((item["answer"] for item in row["answers"] if item["normalized_answer"] == pure_key), row["voted_answer"])
+        pure_answer = next(
+            (
+                item["answer"]
+                for item in row["answers"]
+                if item["normalized_answer"] == pure_key
+            ),
+            row["voted_answer"],
+        )
+        coalition_fallback = None
     override_answer = row["voted_answer"]
-    if majority_candidate and majority_candidate["score"] is not None:
-        challenger = next((candidate for candidate in scored if candidate["key"] == pure_key), None)
-        if challenger and pure_key != majority_key and challenger["score"] - majority_candidate["score"] > override_margin:
+    if not score_tie and majority_candidate and majority_candidate["score"] is not None:
+        challenger = best[0]
+        if (
+            challenger["key"] != majority_key
+            and challenger["score"] - majority_candidate["score"] > override_margin
+        ):
             override_answer = pure_answer
     return {
         "majority_answer": row["voted_answer"],
@@ -292,6 +304,8 @@ def _choose_coalition_answers(
         "pure_reliability_answer": pure_answer,
         "coalition_candidates": candidates,
         "overridden": override_answer != row["voted_answer"],
+        "coalition_score_tie": score_tie,
+        "coalition_fallback": coalition_fallback,
     }
 
 
