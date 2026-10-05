@@ -508,17 +508,20 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     skills: list[SkillResults], base_rows: list[dict],
                     handler: DatasetHandler, cfg: dict,
                     output_root: Path) -> tuple[dict, dict]:
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     import hashlib
     from scripts.eval_only import get_adapter
     from searchqa_test import configure_runtime
 
     embedding_env = _required_env(("EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL"))
-    configure_runtime(cfg)  # Reuse the same mandatory LLM environment variables.
+    configure_runtime(cfg)
     adapter = get_adapter(cfg)
     adapter.setup(cfg)
-    items_by_id = {str(item["id"]): item for item in
-                   adapter.build_eval_env(0, "valid_unseen", cfg.get("seed", 42))}
+    items_by_id = {
+        str(item["id"]): item
+        for item in adapter.build_eval_env(0, "valid_unseen", cfg.get("seed", 42))
+    }
+
     _, selection = _source_selection(input_root)
     selected = selection["selected"]
     if len(selected) != len(skills):
@@ -529,6 +532,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
         if hashlib.sha256(path.read_bytes()).digest() != hashlib.sha256(gate_skill.path.read_bytes()).digest():
             raise ValueError(f"gate skill content mismatch: {gate_skill.name}")
         contents.append(path.read_text(encoding="utf-8"))
+
     gate_ids, correctness = _gate_correctness(gate_skills, handler)
     k = len(skills)
     if len(gate_ids) < k:
@@ -536,85 +540,150 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
     missing = set(row["id"] for row in base_rows) - items_by_id.keys()
     if missing:
         raise ValueError(f"test IDs missing from dataset: {sorted(missing)}")
-    # No disk cache: embeddings are requested anew for each execution.
-    # Preserve gate record order for exact similarity ties.
-    ordered_ids = list(gate_skills[0].rows_by_id)
+
+    ordered_gate_ids = list(gate_skills[0].rows_by_id)
     correctness_index = {qid: index for index, qid in enumerate(gate_ids)}
-    gate_ids = ordered_ids
-    matrix = [[correctness[skill.name][correctness_index[qid]] for qid in gate_ids]
-              for skill in gate_skills]
-    global_reliability = [sum(values) / len(gate_ids) for values in matrix]
-    embedding_stats = {"attempts": 0, "retries": 0, "exhausted": 0}
-    disagreement_count = sum(len(row["vote_counts"]) > 1 for row in base_rows)
+    matrix = [
+        [correctness[skill.name][correctness_index[qid]] for qid in ordered_gate_ids]
+        for skill in gate_skills
+    ]
+    global_reliability = [sum(values) / len(ordered_gate_ids) for values in matrix]
+
     output_root.mkdir(parents=True, exist_ok=False)
-    gate_vectors = []
-    if disagreement_count:
-        for index, qid in enumerate(gate_ids, 1):
-            vector = _embedding(gate_skills[0].rows_by_id[qid]["question"],
-                                embedding_env, f"gate {index}/{len(gate_ids)}", embedding_stats)
+    embedding_stats = {"attempts": 0, "retries": 0, "exhausted": 0}
+    disagreement = [row for row in base_rows if len(row["vote_counts"]) > 1]
+    gate_vectors: list[list[float]] | None = []
+    if disagreement:
+        for index, qid in enumerate(ordered_gate_ids, 1):
+            vector = _embedding(
+                gate_skills[0].rows_by_id[qid]["question"],
+                embedding_env,
+                f"gate {index}/{len(ordered_gate_ids)}",
+                embedding_stats,
+            )
             if vector is None:
                 gate_vectors = None
                 log("[rag] gate embedding failed; QA-RAG and local methods fallback to majority")
                 break
             gate_vectors.append(vector)
-            log(f"[embedding] gate {index}/{len(gate_ids)} completed")
-    output = {name: [] for name in ("rag", "global_max", "global_mean", "local_max", "local_mean")}
-    processed = 0
-    # Each disagreement question runs its K skills in parallel, with the original
-    # adapter's worker limit. Every attempt has its own output directory.
-    with ThreadPoolExecutor(max_workers=max(1, min(k, adapter.workers))) as executor:
-        for row in base_rows:
-            decisions = {name: (row["voted_answer"], {"fallback": None, "reason": "unchanged"})
-                         for name in output}
-            if len(row["vote_counts"]) > 1:
-                processed += 1
-                log(f"[rag] disagreement {processed}/{disagreement_count} id={row['id']}")
-                global_decisions = _reliability_answers(row, global_reliability)
-                for mode in ("max", "mean"):
-                    decisions[f"global_{mode}"] = global_decisions[mode]
-                query = (_embedding(row["question"], embedding_env, f"test id={row['id']}", embedding_stats)
-                         if gate_vectors is not None else None)
-                if query is None:
-                    log(f"[rag] id={row['id']}: embedding unavailable; local and QA-RAG fallback to original majority")
-                    for name in ("rag", "local_max", "local_mean"):
-                        decisions[name] = (row["voted_answer"], {"fallback": "majority", "reason": "embedding_failure"})
-                else:
-                    indices = _top_gate_indices(query, gate_vectors, k)
-                    neighbours = [gate_ids[index] for index in indices]
-                    local_reliability = [sum(values[index] for index in indices) / k for values in matrix]
-                    local_decisions = _reliability_answers(row, local_reliability)
-                    for mode in ("max", "mean"):
-                        answer, detail = local_decisions[mode]
-                        decisions[f"local_{mode}"] = (answer, {**detail, "gate_ids": neighbours,
-                                                              "skill_reliabilities": local_reliability})
-                    examples = "\n\n".join(
-                        f"Example question:\n{gate_skills[0].rows_by_id[qid]['question']}\n\n"
-                        f"Example answer:\n{get_gold_answers(gate_skills[0].rows_by_id[qid])[0]}"
-                        for qid in neighbours)
-                    futures = [executor.submit(
-                        _rerun_one_skill, adapter, items_by_id[row["id"]], skill, content,
-                        examples, handler, output_root / "reinference" / f"{skill.rank:03d}_{skill.name}" / row["id"])
-                        for skill, content in zip(skills, contents)]
-                    reruns = [future.result() for future in futures]
-                    temporary = [SkillResults(skill.rank, skill.name, skill.path, {row["id"]: result})
-                                 for skill, result in zip(skills, reruns)]
-                    new_vote = build_vote_row(row["id"], temporary, handler)
-                    exhausted = new_vote["status"] == "no_vote"
-                    if exhausted:
-                        log(f"[rag] id={row['id']}: all reinferences failed; fallback to original majority")
-                    # Failed skills remain invalid votes; all failures fall back.
-                    decisions["rag"] = (
-                        row["voted_answer"] if exhausted else new_vote["voted_answer"],
-                        {"fallback": "majority" if exhausted else None, "gate_ids": neighbours,
-                         "new_vote": new_vote, "rollout_results": reruns})
-            for name, (answer, detail) in decisions.items():
-                output[name].append(_with_method_answer(row, answer, name, handler, detail))
-    return output, {"embedding": embedding_stats, "L": k,
-                    "disagreement_count": disagreement_count,
-                    "global_skill_reliabilities": global_reliability,
-                    "embedding_model": embedding_env["EMBEDDING_MODEL"],
-                    "inference_model": os.environ["OPENAI_COMPATIBLE_MODEL"]}
+            log(f"[embedding] gate {index}/{len(ordered_gate_ids)} completed")
 
+    output = {name: [] for name in ("rag", "global_max", "global_mean", "local_max", "local_mean")}
+    contexts: dict[str, dict] = {}
+    for position, row in enumerate(disagreement, 1):
+        log(f"[rag] preparing disagreement {position}/{len(disagreement)} id={row['id']}")
+        global_decisions = _reliability_answers(row, global_reliability)
+        decisions = {
+            f"global_{mode}": global_decisions[mode]
+            for mode in ("max", "mean")
+        }
+        context = {"row": row, "decisions": decisions, "run_rag": False}
+        if gate_vectors is not None:
+            query = _embedding(
+                row["question"], embedding_env, f"test id={row['id']}", embedding_stats
+            )
+            if query is not None:
+                indices = _top_gate_indices(query, gate_vectors, k)
+                neighbours = [ordered_gate_ids[index] for index in indices]
+                local_reliability = [
+                    sum(values[index] for index in indices) / k for values in matrix
+                ]
+                local_decisions = _reliability_answers(row, local_reliability)
+                for mode in ("max", "mean"):
+                    answer, detail = local_decisions[mode]
+                    decisions[f"local_{mode}"] = (
+                        answer,
+                        {**detail, "gate_ids": neighbours,
+                         "skill_reliabilities": local_reliability},
+                    )
+                examples = "\n\n".join(
+                    f"Example question:\n{gate_skills[0].rows_by_id[qid]['question']}\n\n"
+                    f"Example answer:\n{get_gold_answers(gate_skills[0].rows_by_id[qid])[0]}"
+                    for qid in neighbours
+                )
+                context.update(
+                    item=items_by_id[row["id"]],
+                    examples=examples,
+                    neighbours=neighbours,
+                    run_rag=True,
+                )
+            else:
+                log(f"[rag] id={row['id']}: embedding unavailable; local and QA-RAG fallback to majority")
+        contexts[row["id"]] = context
+
+    # Submit every (question, skill) pair together. This removes the previous
+    # per-question barrier while leaving each retry and rollout implementation
+    # unchanged.
+    reruns_by_question: dict[str, dict[int, dict]] = {}
+    future_map = {}
+    with ThreadPoolExecutor(max_workers=max(1, int(adapter.workers))) as executor:
+        for question_id, context in contexts.items():
+            if not context["run_rag"]:
+                continue
+            for skill, content in zip(skills, contents):
+                future = executor.submit(
+                    _rerun_one_skill,
+                    adapter,
+                    context["item"],
+                    skill,
+                    content,
+                    context["examples"],
+                    handler,
+                    output_root / "reinference" / f"{skill.rank:03d}_{skill.name}" / question_id,
+                )
+                future_map[future] = (question_id, skill.rank)
+        for completed, future in enumerate(as_completed(future_map), 1):
+            question_id, rank = future_map[future]
+            reruns_by_question.setdefault(question_id, {})[rank] = future.result()
+            if completed % max(1, len(skills)) == 0 or completed == len(future_map):
+                log(f"[rag] reinference tasks {completed}/{len(future_map)} completed")
+
+    for row in base_rows:
+        decisions = {
+            name: (row["voted_answer"], {"fallback": None, "reason": "unchanged"})
+            for name in output
+        }
+        if len(row["vote_counts"]) > 1:
+            context = contexts[row["id"]]
+            decisions.update(context["decisions"])
+            if context["run_rag"]:
+                reruns = [
+                    reruns_by_question[row["id"]][skill.rank]
+                    for skill in skills
+                ]
+                temporary = [
+                    SkillResults(skill.rank, skill.name, skill.path, {row["id"]: result})
+                    for skill, result in zip(skills, reruns)
+                ]
+                new_vote = build_vote_row(row["id"], temporary, handler)
+                exhausted = new_vote["status"] == "no_vote"
+                if exhausted:
+                    log(f"[rag] id={row['id']}: all reinferences failed; fallback to original majority")
+                decisions["rag"] = (
+                    row["voted_answer"] if exhausted else new_vote["voted_answer"],
+                    {"fallback": "majority" if exhausted else None,
+                     "gate_ids": context["neighbours"],
+                     "new_vote": new_vote,
+                     "rollout_results": reruns},
+                )
+            else:
+                decisions["rag"] = (
+                    row["voted_answer"],
+                    {"fallback": "majority", "reason": "embedding_failure"},
+                )
+        for name, (answer, detail) in decisions.items():
+            output[name].append(_with_method_answer(row, answer, name, handler, detail))
+
+    return output, {
+        "embedding": embedding_stats,
+        "L": k,
+        "disagreement_count": len(disagreement),
+        "global_skill_reliabilities": global_reliability,
+        "embedding_model": embedding_env["EMBEDDING_MODEL"],
+        "inference_model": os.environ["OPENAI_COMPATIBLE_MODEL"],
+        "reinference_tasks": len(future_map),
+        "max_workers": max(1, int(adapter.workers)),
+    }
 
 def _method_summary(rows: list[dict]) -> dict:
     disagreement = [row for row in rows if len(row["vote_counts"]) > 1]
