@@ -121,4 +121,10 @@ python test-phase/test_vote_result.py \
   --dataset searchqa \
   --policy coalition \
   --override-margin 0.05
+  
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_234948_vote_global_numskills5 \
+  --dataset searchqa \
+  --policy rag \
+  --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
 ```
