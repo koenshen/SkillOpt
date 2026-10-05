@@ -470,18 +470,23 @@ def _with_method_answer(row: dict, answer: str, method: str,
 
 
 def _rerun_one_skill(adapter, item: dict, skill: SkillResults, content: str,
-                     examples: str, handler: DatasetHandler, out_dir: Path) -> dict:
+                     examples: str | None, handler: DatasetHandler, out_dir: Path,
+                     log_prefix: str = "rag") -> dict:
     stats = {"attempts": 0, "retries": 0, "exhausted": 0,
              "timeout_count": 0, "error_count": 0}
     def run():
         attempt_dir = out_dir / f"attempt_{stats['attempts']:02d}"
-        # Reuse SearchQA's existing diagnostic prompt path so the examples are
-        # appended to the user prompt while the selected skill stays unchanged.
         try:
-            results = adapter.rollout(
-                [item], content, str(attempt_dir), diagnostic_mode=True,
-                diagnostic_instruction=examples,
-            )
+            if examples:
+                # Reuse SearchQA's existing diagnostic prompt path so the
+                # examples are appended while the selected skill stays unchanged.
+                results = adapter.rollout(
+                    [item], content, str(attempt_dir), diagnostic_mode=True,
+                    diagnostic_instruction=examples,
+                )
+            else:
+                # No-RAG control: use the ordinary rollout prompt unchanged.
+                results = adapter.rollout([item], content, str(attempt_dir))
         except Exception as exc:
             timeout = "timeout" in str(exc).lower() or isinstance(exc, TimeoutError)
             stats["timeout_count" if timeout else "error_count"] += 1
@@ -495,9 +500,9 @@ def _rerun_one_skill(adapter, item: dict, skill: SkillResults, content: str,
             stats["timeout_count" if timeout else "error_count"] += 1
             raise RuntimeError("invalid rollout answer")
         return row
-    result = _retry_request(run, f"rag id={item['id']} skill={skill.rank}", stats)
+    result = _retry_request(run, f"{log_prefix} id={item['id']} skill={skill.rank}", stats)
     if result is None:
-        log(f"[rag] id={item['id']} skill={skill.rank}: excluded as invalid vote")
+        log(f"[{log_prefix}] id={item['id']} skill={skill.rank}: excluded as invalid vote")
         result = {"id": str(item["id"]), "question": item["question"],
                   "gold_answers": item.get("answers", []), "predicted_answer": "",
                   "phase": "error", "agent_ok": False}
@@ -507,13 +512,15 @@ def _rerun_one_skill(adapter, item: dict, skill: SkillResults, content: str,
 def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     skills: list[SkillResults], base_rows: list[dict],
                     handler: DatasetHandler, cfg: dict,
-                    output_root: Path) -> tuple[dict, dict]:
+                    output_root: Path, use_rag: bool = True) -> tuple[dict, dict]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import hashlib
     from scripts.eval_only import get_adapter
     from searchqa_test import configure_runtime
 
-    embedding_env = _required_env(("EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL"))
+    embedding_env = None
+    if use_rag:
+        embedding_env = _required_env(("EMBEDDING_BASE_URL", "EMBEDDING_API_KEY", "EMBEDDING_MODEL"))
     configure_runtime(cfg)
     adapter = get_adapter(cfg)
     adapter.setup(cfg)
@@ -533,27 +540,31 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
             raise ValueError(f"gate skill content mismatch: {gate_skill.name}")
         contents.append(path.read_text(encoding="utf-8"))
 
-    gate_ids, correctness = _gate_correctness(gate_skills, handler)
     k = len(skills)
-    if len(gate_ids) < k:
-        raise ValueError(f"gate questions={len(gate_ids)} smaller than K={k}")
     missing = set(row["id"] for row in base_rows) - items_by_id.keys()
     if missing:
         raise ValueError(f"test IDs missing from dataset: {sorted(missing)}")
 
-    ordered_gate_ids = list(gate_skills[0].rows_by_id)
-    correctness_index = {qid: index for index, qid in enumerate(gate_ids)}
-    matrix = [
-        [correctness[skill.name][correctness_index[qid]] for qid in ordered_gate_ids]
-        for skill in gate_skills
-    ]
-    global_reliability = [sum(values) / len(ordered_gate_ids) for values in matrix]
+    ordered_gate_ids = []
+    matrix = []
+    global_reliability = []
+    if use_rag:
+        gate_ids, correctness = _gate_correctness(gate_skills, handler)
+        if len(gate_ids) < k:
+            raise ValueError(f"gate questions={len(gate_ids)} smaller than K={k}")
+        ordered_gate_ids = list(gate_skills[0].rows_by_id)
+        correctness_index = {qid: index for index, qid in enumerate(gate_ids)}
+        matrix = [
+            [correctness[skill.name][correctness_index[qid]] for qid in ordered_gate_ids]
+            for skill in gate_skills
+        ]
+        global_reliability = [sum(values) / len(ordered_gate_ids) for values in matrix]
 
     output_root.mkdir(parents=True, exist_ok=False)
     embedding_stats = {"attempts": 0, "retries": 0, "exhausted": 0}
     disagreement = [row for row in base_rows if len(row["vote_counts"]) > 1]
-    gate_vectors: list[list[float]] | None = []
-    if disagreement:
+    gate_vectors: list[list[float]] | None = [] if use_rag else None
+    if use_rag and disagreement:
         for index, qid in enumerate(ordered_gate_ids, 1):
             vector = _embedding(
                 gate_skills[0].rows_by_id[qid]["question"],
@@ -568,17 +579,28 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
             gate_vectors.append(vector)
             log(f"[embedding] gate {index}/{len(ordered_gate_ids)} completed")
 
-    output = {name: [] for name in ("rag", "global_max", "global_mean", "local_max", "local_mean")}
+    output = (
+        {name: [] for name in ("rag", "global_max", "global_mean", "local_max", "local_mean")}
+        if use_rag else {"no_rag": []}
+    )
     contexts: dict[str, dict] = {}
+    mode_label = "rag" if use_rag else "no_rag"
     for position, row in enumerate(disagreement, 1):
-        log(f"[rag] preparing disagreement {position}/{len(disagreement)} id={row['id']}")
-        global_decisions = _reliability_answers(row, global_reliability)
-        decisions = {
-            f"global_{mode}": global_decisions[mode]
-            for mode in ("max", "mean")
+        log(f"[{mode_label}] preparing disagreement {position}/{len(disagreement)} id={row['id']}")
+        decisions = {}
+        if use_rag:
+            global_decisions = _reliability_answers(row, global_reliability)
+            decisions = {
+                f"global_{mode}": global_decisions[mode]
+                for mode in ("max", "mean")
+            }
+        context = {
+            "row": row,
+            "decisions": decisions,
+            "run_rag": not use_rag,
+            "item": items_by_id[row["id"]],
         }
-        context = {"row": row, "decisions": decisions, "run_rag": False}
-        if gate_vectors is not None:
+        if use_rag and gate_vectors is not None:
             query = _embedding(
                 row["question"], embedding_env, f"test id={row['id']}", embedding_stats
             )
@@ -627,9 +649,10 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     context["item"],
                     skill,
                     content,
-                    context["examples"],
+                    context.get("examples", ""),
                     handler,
                     output_root / "reinference" / f"{skill.rank:03d}_{skill.name}" / question_id,
+                    mode_label,
                 )
                 future_map[future] = (question_id, skill.rank)
         for completed, future in enumerate(as_completed(future_map), 1):
@@ -658,11 +681,12 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                 new_vote = build_vote_row(row["id"], temporary, handler)
                 exhausted = new_vote["status"] == "no_vote"
                 if exhausted:
-                    log(f"[rag] id={row['id']}: all reinferences failed; fallback to original majority")
-                decisions["rag"] = (
+                    log(f"[{ 'rag' if use_rag else 'no_rag' }] id={row['id']}: all reinferences failed; fallback to original majority")
+                method_name = "rag" if use_rag else "no_rag"
+                decisions[method_name] = (
                     row["voted_answer"] if exhausted else new_vote["voted_answer"],
                     {"fallback": "majority" if exhausted else None,
-                     "gate_ids": context["neighbours"],
+                     **({"gate_ids": context["neighbours"]} if use_rag else {}),
                      "new_vote": new_vote,
                      "rollout_results": reruns},
                 )
@@ -679,7 +703,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
         "L": k,
         "disagreement_count": len(disagreement),
         "global_skill_reliabilities": global_reliability,
-        "embedding_model": embedding_env["EMBEDDING_MODEL"],
+        "embedding_model": embedding_env["EMBEDDING_MODEL"] if embedding_env else None,
         "inference_model": os.environ["OPENAI_COMPATIBLE_MODEL"],
         "reinference_tasks": len(future_map),
         "max_workers": max(1, int(adapter.workers)),
@@ -712,7 +736,7 @@ def _method_summary(rows: list[dict]) -> dict:
 
 
 def default_output_root(input_root: Path, policy: str) -> Path:
-    suffix = {"coalition": "_coalition", "rag": "_rag"}.get(policy, "_vote")
+    suffix = {"coalition": "_coalition", "rag": "_rag", "no_rag": "_no_rag"}.get(policy, "_vote")
     base_name = input_root.name
     if base_name.endswith("_vote"):
         base_name = base_name[: -len("_vote")]
@@ -725,13 +749,13 @@ def main() -> None:
     parser.add_argument("--dataset", required=True, choices=tuple(DATASET_HANDLERS))
     parser.add_argument("--output-root")
     parser.add_argument("--gate-root")
-    parser.add_argument("--policy", choices=("majority", "coalition", "rag"), default="majority")
+    parser.add_argument("--policy", choices=("majority", "coalition", "rag", "no_rag"), default="majority")
     parser.add_argument("--override-margin", type=float)
     args = parser.parse_args()
 
-    if args.policy in {"coalition", "rag"}:
+    if args.policy in {"coalition", "rag", "no_rag"}:
         if not args.gate_root:
-            if args.policy == "rag":
+            if args.policy in {"rag", "no_rag"}:
                 _, selection = _source_selection(Path(args.input_root).expanduser().resolve())
                 args.gate_root = selection.get("source_result_root")
             if not args.gate_root:
@@ -757,7 +781,7 @@ def main() -> None:
     skills = load_skill_results(input_root)
     gate_skills = None
     gate_stats = None
-    if args.policy in {"coalition", "rag"}:
+    if args.policy in {"coalition", "rag", "no_rag"}:
         gate_root = Path(args.gate_root).expanduser().resolve()
         gate_skills = _selected_gate_skills(input_root, gate_root, skills)
         if args.policy == "coalition":
@@ -798,17 +822,18 @@ def main() -> None:
 
     rag_outputs = None
     rag_metadata = None
-    if args.policy == "rag":
+    if args.policy in {"rag", "no_rag"}:
         gate_config_path = Path(args.gate_root).expanduser().resolve() / "config.json"
         if not gate_config_path.is_file():
             raise FileNotFoundError(f"missing gate config.json: {gate_config_path}")
         with gate_config_path.open(encoding="utf-8") as handle:
             gate_cfg = json.load(handle)
         rag_outputs, rag_metadata = _run_rag_bundle(
-            input_root, gate_skills, skills, vote_rows, handler, gate_cfg, output_root
+            input_root, gate_skills, skills, vote_rows, handler, gate_cfg, output_root,
+            use_rag=args.policy == "rag",
         )
 
-    if args.policy != "rag":
+    if args.policy not in {"rag", "no_rag"}:
         output_root.mkdir(parents=True)
     with (output_root / "vote_results.jsonl").open("w", encoding="utf-8") as handle:
         for row in vote_rows:
@@ -861,9 +886,11 @@ def main() -> None:
             "pure_reliability_soft": score_mean(vote_rows, "pure_reliability_answer_soft"),
             "override_count": sum(1 for row in vote_rows if row["coalition"]["overridden"]),
         }
-    if args.policy == "rag":
-        summary["rag"] = {method: _method_summary(rows) for method, rows in rag_outputs.items()}
-        summary["rag_metadata"] = {**rag_metadata, "gate_root": str(Path(args.gate_root).resolve())}
+    if args.policy in {"rag", "no_rag"}:
+        summary[args.policy] = {method: _method_summary(rows) for method, rows in rag_outputs.items()}
+        summary[f"{args.policy}_metadata"] = {
+            **rag_metadata, "gate_root": str(Path(args.gate_root).resolve())
+        }
     with (output_root / "summary.json").open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
     with (output_root / "selection.json").open("w", encoding="utf-8") as handle:

@@ -121,10 +121,18 @@ python test-phase/test_vote_result.py \
   --dataset searchqa \
   --policy coalition \
   --override-margin 0.05
-  
+
+# re-generate questions with divergent answers with few-shot
 python test-phase/test_vote_result.py \
-  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_234948_vote_global_numskills5 \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261006_021120_top_k_numskills3 \
   --dataset searchqa \
   --policy rag \
+  --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
+
+# ablation: re-generate questions with divergent answers without few-shot
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261006_021120_top_k_numskills3 \
+  --dataset searchqa \
+  --policy no_rag \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
 ```
