@@ -819,6 +819,10 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     {"fallback": "majority", "reason": "embedding_failure"},
                 )
         for name, (answer, detail) in decisions.items():
+            # The matrix policy keeps only its final result file; the shared
+            # context may still contain auxiliary RAG decisions.
+            if name not in output:
+                continue
             output[name].append(_with_method_answer(row, answer, name, handler, detail))
 
     return output, {
