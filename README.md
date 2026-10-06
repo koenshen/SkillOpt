@@ -118,6 +118,10 @@ python test-phase/spreadsheetbench_test.py \
   --input-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261004_035613 \
   --mode top_k \
   --num-skills 5
+python test-phase/spreadsheetbench_test.py \
+  --input-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261004_035613 \
+  --mode top_k \
+  --num-skills 5
   
 python test-phase/officeqa_test.py \
   --input-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261005_040355 \
@@ -130,32 +134,40 @@ python test-phase/officeqa_test.py \
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_234948_vote_global_numskills5 \
   --dataset searchqa
-  
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261004_015929_top_k_numskills9 \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315 \
   --dataset searchqa \
   --policy coalition \
   --override-margin 0.05
-
 # re-generate questions with divergent answers with few-shot
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261006_021120_top_k_numskills3 \
   --dataset searchqa \
   --policy rag \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
-
 # ablation with rag: re-generate questions with divergent answers without few-shot
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261006_021120_top_k_numskills3 \
   --dataset searchqa \
   --policy no_rag \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
-  
 # ablation with rag: three stage round by k=k
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261006_021120_top_k_numskills3 \
   --dataset searchqa \
   --policy rag_matrix \
   --matrix-samples 5
+  
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261006_045154_top_k_numskills5 \
+  --dataset officeqa \
+  --policy rag \
+  --gate-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261005_040355
+  
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261006_045110_top_k_numskills5 \
+  --dataset spreadsheetbench \
+  --policy rag \
+  --gate-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261005_034349
 ```

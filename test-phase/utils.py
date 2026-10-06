@@ -82,8 +82,25 @@ def _searchqa_handler() -> DatasetHandler:
     return DatasetHandler(extract_answer, normalize_answer, evaluate)
 
 
+def _officeqa_handler() -> DatasetHandler:
+    from skillopt.envs.officeqa.evaluator import evaluate, normalize_answer
+
+    def extract_answer(row: dict) -> str:
+        answer = row.get("predicted_answer", "")
+        return answer.strip() if isinstance(answer, str) else ""
+
+    def evaluate_answer(prediction: str, gold_answers: list[str]) -> dict:
+        result = evaluate(prediction, gold_answers[0] if gold_answers else "")
+        # OfficeQA has EM and F1 only. Keep the common record schema without
+        # inventing a substring metric for this dataset.
+        return {**result, "sub_em": None}
+
+    return DatasetHandler(extract_answer, normalize_answer, evaluate_answer)
+
+
 DATASET_HANDLERS: dict[str, Callable[[], DatasetHandler]] = {
     "searchqa": _searchqa_handler,
+    "officeqa": _officeqa_handler,
 }
 
 
@@ -135,7 +152,7 @@ def build_answer_groups(
 def get_gold_answers(row: dict) -> list[str]:
     gold_answers = row.get("gold_answers")
     if not isinstance(gold_answers, list):
-        gold_answers = row.get("gold_answer", [])
+        gold_answers = row.get("gold_answer", row.get("ground_truth", []))
         if isinstance(gold_answers, str):
             gold_answers = [gold_answers]
     return [str(answer) for answer in gold_answers]

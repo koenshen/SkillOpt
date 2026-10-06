@@ -159,6 +159,7 @@ def _selected_gate_skills(
     input_root: Path,
     gate_root: Path,
     test_skills: list[SkillResults],
+    dataset: str = "searchqa",
 ) -> list[SkillResults]:
     """Load only the skills selected in the test output from SkillOpt gate data."""
     selection_path = input_root / "selection.json"
@@ -176,13 +177,25 @@ def _selected_gate_skills(
     # Reuse the shared candidate discovery and best-skill matching utilities.
     from utils import load_candidates, load_last_best_skill
 
-    candidates = load_candidates(gate_root)
+    expected_ids = None
+    if dataset != "searchqa":
+        from scripts.eval_only import get_adapter
+        from utils import load_split_ids
+
+        with (gate_root / "config.json").open(encoding="utf-8") as handle:
+            gate_cfg = json.load(handle)
+        if gate_cfg.get("env") != dataset:
+            raise ValueError(f"gate config does not identify dataset {dataset}")
+        adapter = get_adapter(gate_cfg)
+        adapter.setup(gate_cfg)
+        expected_ids = load_split_ids(adapter, "valid_seen", gate_cfg.get("seed", 42))
+    candidates = load_candidates(gate_root, expected_ids)
     by_name = {candidate.name: candidate for candidate in candidates}
     gate_candidates = []
     for name in selected_names:
         base_name = re.sub(r"^\d{3}_", "", name)
         if base_name == "best_skill":
-            gate_candidates.append(load_last_best_skill(gate_root, candidates))
+            gate_candidates.append(load_last_best_skill(gate_root, candidates, expected_ids))
             continue
         candidate = by_name.get(base_name)
         if candidate is None:
@@ -504,7 +517,7 @@ def _rerun_one_skill(adapter, item: dict, skill: SkillResults, content: str,
     if result is None:
         log(f"[{log_prefix}] id={item['id']} skill={skill.rank}: excluded as invalid vote")
         result = {"id": str(item["id"]), "question": item["question"],
-                  "gold_answers": item.get("answers", []), "predicted_answer": "",
+                  "gold_answers": item.get("answers", [item.get("ground_truth", "")]), "predicted_answer": "",
                   "phase": "error", "agent_ok": False}
     return {**result, "request_stats": stats}
 
@@ -525,7 +538,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import hashlib
     from scripts.eval_only import get_adapter
-    from searchqa_test import configure_runtime
+    from utils import configure_runtime
 
     embedding_env = None
     if use_rag:
@@ -932,7 +945,7 @@ def main() -> None:
     gate_stats = None
     if args.policy in {"coalition", "rag", "no_rag", "rag_matrix"}:
         gate_root = Path(args.gate_root).expanduser().resolve()
-        gate_skills = _selected_gate_skills(input_root, gate_root, skills)
+        gate_skills = _selected_gate_skills(input_root, gate_root, skills, args.dataset)
         if args.policy == "coalition":
             gate_stats = _build_gate_stats(gate_skills, handler)
     question_ids = sorted(skills[0].rows_by_id)
