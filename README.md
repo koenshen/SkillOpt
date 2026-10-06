@@ -178,5 +178,11 @@ python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261006_045110_top_k_numskills5 \
   --dataset spreadsheetbench \
   --policy rag \
+  --gate-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261004_035613
+  
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261006_222851_top_k_numskills3 \
+  --dataset livemathematicianbench \
+  --policy rag \
   --gate-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261005_034349
 ```

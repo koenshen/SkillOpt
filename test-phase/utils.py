@@ -28,6 +28,8 @@ class DatasetHandler:
     extract_answer: Callable[[dict], str]
     normalize_answer: Callable[[str], str]
     evaluate_answer: Callable[[str, list[str]], dict]
+    evaluate_row: Callable[[str, dict], dict] | None = None
+    format_example: Callable[[dict, dict], str] | None = None
 
 
 @dataclass(frozen=True)
@@ -98,9 +100,48 @@ def _officeqa_handler() -> DatasetHandler:
     return DatasetHandler(extract_answer, normalize_answer, evaluate_answer)
 
 
+def _livemath_handler() -> DatasetHandler:
+    from skillopt.envs.livemathematicianbench.evaluator import evaluate, normalize_label
+
+    def extract_prediction(row: dict) -> str:
+        answer = row.get("predicted_label") or row.get("predicted_answer", "")
+        return str(answer).strip() if answer is not None else ""
+
+    def evaluate_answer(prediction: str, gold_answers: list[str]) -> dict:
+        predicted = normalize_label(prediction)
+        correct = normalize_label(gold_answers[0]) if gold_answers else ""
+        ok = float(bool(predicted) and predicted == correct)
+        return {"em": ok, "f1": ok, "sub_em": ok,
+                "predicted_answer": predicted, "predicted_label": predicted,
+                "correct_label": correct}
+
+    def evaluate_row(prediction: str, row: dict) -> dict:
+        choices = row.get("choices") or []
+        correct = row.get("correct_choice")
+        if isinstance(correct, dict) and choices:
+            return evaluate(prediction, correct, choices)
+        return evaluate_answer(prediction, get_gold_answers(row))
+
+    def format_example(item: dict, row: dict) -> str:
+        choices = item.get("choices") or []
+        choice_text = "\n".join(
+            f"{choice.get('label', '')}. {choice.get('text', '')}" for choice in choices
+        )
+        correct = item.get("correct_choice") or {}
+        label = correct.get("label") or row.get("correct_label", "")
+        return (
+            f"Example question:\n{item.get('question', row.get('question', ''))}\n\n"
+            f"Choices:\n{choice_text}\n\nCorrect answer:\n{label}"
+        )
+
+    return DatasetHandler(extract_prediction, normalize_label, evaluate_answer,
+                          evaluate_row=evaluate_row, format_example=format_example)
+
+
 DATASET_HANDLERS: dict[str, Callable[[], DatasetHandler]] = {
     "searchqa": _searchqa_handler,
     "officeqa": _officeqa_handler,
+    "livemathematicianbench": _livemath_handler,
 }
 
 
@@ -153,6 +194,8 @@ def get_gold_answers(row: dict) -> list[str]:
     gold_answers = row.get("gold_answers")
     if not isinstance(gold_answers, list):
         gold_answers = row.get("gold_answer", row.get("ground_truth", []))
+        if not gold_answers and row.get("correct_label") is not None:
+            gold_answers = [row["correct_label"]]
         if isinstance(gold_answers, str):
             gold_answers = [gold_answers]
     return [str(answer) for answer in gold_answers]

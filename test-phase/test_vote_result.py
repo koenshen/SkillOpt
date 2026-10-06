@@ -54,6 +54,12 @@ def score_mean(rows: list[dict], field: str) -> float:
     return sum(float(row.get(field, 0.0) or 0.0) for row in rows) / len(rows)
 
 
+def _evaluate_answer(handler: DatasetHandler, answer: str, row: dict) -> dict:
+    if handler.evaluate_row is not None:
+        return handler.evaluate_row(answer, row)
+    return handler.evaluate_answer(answer, get_gold_answers(row))
+
+
 def _candidate_groups(row: dict) -> list[tuple[str, tuple[int, ...]]]:
     groups = []
     for key in row["vote_counts"]:
@@ -124,7 +130,7 @@ def build_vote_row(
         )
         vote_count = highest
 
-    evaluation = handler.evaluate_answer(voted_answer, gold_answers)
+    evaluation = _evaluate_answer(handler, voted_answer, first_row)
     return {
         "id": question_id,
         "question": first_row.get("question", ""),
@@ -242,7 +248,7 @@ def _build_gate_stats(
         partition = _partition_key(groups, invalid)
         for group in groups:
             answer = answers[group[0]]["answer"]
-            correct = int(handler.evaluate_answer(answer, gold)["em"])
+            correct = int(_evaluate_answer(handler, answer, source_rows[0])["em"])
             entry = exact.setdefault((partition, group), [0, 0])
             entry[0] += 1
             entry[1] += correct
@@ -374,7 +380,7 @@ def _gate_correctness(
             answer = handler.extract_answer(row)
             valid = is_valid_vote(row, answer, handler)
             correctness[skill.name].append(
-                int(valid and handler.evaluate_answer(answer, gold)["em"])
+                int(valid and _evaluate_answer(handler, answer, row)["em"])
             )
     return question_ids, correctness
 
@@ -475,7 +481,7 @@ def _with_method_answer(row: dict, answer: str, method: str,
     result["voted_answer"] = answer
     result["method"] = method
     result["decision"] = detail
-    evaluation = handler.evaluate_answer(answer, row["gold_answers"])
+    evaluation = _evaluate_answer(handler, answer, row)
     result.update(em=evaluation["em"], f1=evaluation["f1"],
                   sub_em=evaluation["sub_em"], hard=int(evaluation["em"]),
                   soft=evaluation["f1"])
@@ -549,6 +555,10 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
     items_by_id = {
         str(item["id"]): item
         for item in adapter.build_eval_env(0, "valid_unseen", cfg.get("seed", 42))
+    }
+    gate_items_by_id = {
+        str(item["id"]): item
+        for item in adapter.build_eval_env(0, "valid_seen", cfg.get("seed", 42))
     }
 
     _, selection = _source_selection(input_root)
@@ -645,6 +655,10 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                              "skill_reliabilities": local_reliability},
                         )
                 examples = "\n\n".join(
+                    handler.format_example(
+                        gate_items_by_id[qid], gate_skills[0].rows_by_id[qid]
+                    )
+                    if handler.format_example is not None else
                     f"Example question:\n{gate_skills[0].rows_by_id[qid]['question']}\n\n"
                     f"Example answer:\n{get_gold_answers(gate_skills[0].rows_by_id[qid])[0]}"
                     for qid in neighbours
