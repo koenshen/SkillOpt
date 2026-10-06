@@ -600,7 +600,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
     for position, row in enumerate(disagreement, 1):
         log(f"[{mode_label}] preparing disagreement {position}/{len(disagreement)} id={row['id']}")
         decisions = {}
-        if use_rag:
+        if use_rag and not matrix_mode:
             global_decisions = _reliability_answers(row, global_reliability)
             decisions = {
                 f"global_{mode}": global_decisions[mode]
@@ -619,17 +619,18 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
             if query is not None:
                 indices = _top_gate_indices(query, gate_vectors, k)
                 neighbours = [ordered_gate_ids[index] for index in indices]
-                local_reliability = [
-                    sum(values[index] for index in indices) / k for values in matrix
-                ]
-                local_decisions = _reliability_answers(row, local_reliability)
-                for mode in ("max", "mean"):
-                    answer, detail = local_decisions[mode]
-                    decisions[f"local_{mode}"] = (
-                        answer,
-                        {**detail, "gate_ids": neighbours,
-                         "skill_reliabilities": local_reliability},
-                    )
+                if not matrix_mode:
+                    local_reliability = [
+                        sum(values[index] for index in indices) / k for values in matrix
+                    ]
+                    local_decisions = _reliability_answers(row, local_reliability)
+                    for mode in ("max", "mean"):
+                        answer, detail = local_decisions[mode]
+                        decisions[f"local_{mode}"] = (
+                            answer,
+                            {**detail, "gate_ids": neighbours,
+                             "skill_reliabilities": local_reliability},
+                        )
                 examples = "\n\n".join(
                     f"Example question:\n{gate_skills[0].rows_by_id[qid]['question']}\n\n"
                     f"Example answer:\n{get_gold_answers(gate_skills[0].rows_by_id[qid])[0]}"
