@@ -127,6 +127,15 @@ python test-phase/officeqa_test.py \
   --input-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261005_040355 \
   --mode top_k \
   --num-skills 5
+  
+python test-phase/livemathematicianbench_test.py \
+  --input-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261005_034349 \
+  --mode top_k \
+  --num-skills 5
+python test-phase/livemathematicianbench_test.py \
+  --input-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261005_034349 \
+  --mode best_repeat \
+  --num-skills 5
 ```
 
 ## 261003 self command - self check
