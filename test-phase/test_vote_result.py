@@ -540,7 +540,9 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     skills: list[SkillResults], base_rows: list[dict],
                     handler: DatasetHandler, cfg: dict,
                     output_root: Path, use_rag: bool = True,
-                    matrix_mode: bool = False, matrix_samples: int = 1) -> tuple[dict, dict]:
+                    matrix_mode: bool = False, matrix_samples: int = 1,
+                    retrieval_k: int | None = None,
+                    primary_method: str = "rag") -> tuple[dict, dict]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import hashlib
     from scripts.eval_only import get_adapter
@@ -573,6 +575,10 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
         contents.append(path.read_text(encoding="utf-8"))
 
     k = len(skills)
+    if retrieval_k is None:
+        retrieval_k = k
+    if retrieval_k <= 0:
+        raise ValueError("retrieval_k must be positive")
     missing = set(row["id"] for row in base_rows) - items_by_id.keys()
     if missing:
         raise ValueError(f"test IDs missing from dataset: {sorted(missing)}")
@@ -614,12 +620,12 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
     if matrix_mode and not use_rag:
         raise ValueError("matrix_mode requires use_rag=True")
     output = (
-        {name: [] for name in ("rag", "global_max", "global_mean", "local_max", "local_mean")}
+        {name: [] for name in (primary_method, "global_max", "global_mean", "local_max", "local_mean")}
         if use_rag and not matrix_mode else
         {"rag_matrix": []} if matrix_mode else {"no_rag": []}
     )
     contexts: dict[str, dict] = {}
-    mode_label = "rag" if use_rag else "no_rag"
+    mode_label = primary_method if use_rag else "no_rag"
     for position, row in enumerate(disagreement, 1):
         log(f"[{mode_label}] preparing disagreement {position}/{len(disagreement)} id={row['id']}")
         decisions = {}
@@ -640,11 +646,11 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                 row["question"], embedding_env, f"test id={row['id']}", embedding_stats
             )
             if query is not None:
-                indices = _top_gate_indices(query, gate_vectors, k)
+                indices = _top_gate_indices(query, gate_vectors, retrieval_k)
                 neighbours = [ordered_gate_ids[index] for index in indices]
                 if not matrix_mode:
                     local_reliability = [
-                        sum(values[index] for index in indices) / k for values in matrix
+                        sum(values[index] for index in indices) / retrieval_k for values in matrix
                     ]
                     local_decisions = _reliability_answers(row, local_reliability)
                     for mode in ("max", "mean"):
@@ -831,7 +837,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                         }
                     decisions["rag_matrix"] = (final_answer, detail)
                 else:
-                    method_name = "rag" if use_rag else "no_rag"
+                    method_name = primary_method if use_rag else "no_rag"
                     decisions[method_name] = (
                         row["voted_answer"] if exhausted else new_vote["voted_answer"],
                         {"fallback": "majority" if exhausted else None,
@@ -840,7 +846,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                          "rollout_results": reruns},
                     )
             else:
-                method_name = "rag_matrix" if matrix_mode else "rag"
+                method_name = "rag_matrix" if matrix_mode else primary_method
                 decisions[method_name] = (
                     row["voted_answer"],
                     {"fallback": "majority", "reason": "embedding_failure"},
@@ -854,7 +860,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
 
     return output, {
         "embedding": embedding_stats,
-        "L": k,
+        "L": retrieval_k,
         "matrix_mode": matrix_mode,
         "matrix_samples": matrix_samples if matrix_mode else None,
         "disagreement_count": len(disagreement),
@@ -898,6 +904,7 @@ def default_output_root(input_root: Path, policy: str) -> Path:
     suffix = {
         "coalition": "_coalition",
         "rag": "_rag",
+        "rag_plus": "_rag_plus",
         "no_rag": "_no_rag",
         "rag_matrix": "_rag_matrix",
     }.get(policy, "_vote")
@@ -915,7 +922,7 @@ def main() -> None:
     parser.add_argument("--gate-root")
     parser.add_argument(
         "--policy",
-        choices=("majority", "coalition", "rag", "no_rag", "rag_matrix"),
+        choices=("majority", "coalition", "rag", "rag_plus", "no_rag", "rag_matrix"),
         default="majority",
     )
     parser.add_argument("--matrix-samples", type=int)
@@ -930,9 +937,9 @@ def main() -> None:
     elif args.matrix_samples is not None:
         parser.error("--matrix-samples is only valid with --policy rag_matrix")
 
-    if args.policy in {"coalition", "rag", "no_rag", "rag_matrix"}:
+    if args.policy in {"coalition", "rag", "rag_plus", "no_rag", "rag_matrix"}:
         if not args.gate_root:
-            if args.policy in {"rag", "no_rag", "rag_matrix"}:
+            if args.policy in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
                 _, selection = _source_selection(Path(args.input_root).expanduser().resolve())
                 args.gate_root = selection.get("source_result_root")
             if not args.gate_root:
@@ -957,7 +964,7 @@ def main() -> None:
     skills = load_skill_results(input_root)
     gate_skills = None
     gate_stats = None
-    if args.policy in {"coalition", "rag", "no_rag", "rag_matrix"}:
+    if args.policy in {"coalition", "rag", "rag_plus", "no_rag", "rag_matrix"}:
         gate_root = Path(args.gate_root).expanduser().resolve()
         gate_skills = _selected_gate_skills(input_root, gate_root, skills, args.dataset)
         if args.policy == "coalition":
@@ -998,7 +1005,7 @@ def main() -> None:
 
     rag_outputs = None
     rag_metadata = None
-    if args.policy in {"rag", "no_rag", "rag_matrix"}:
+    if args.policy in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
         gate_config_path = Path(args.gate_root).expanduser().resolve() / "config.json"
         if not gate_config_path.is_file():
             raise FileNotFoundError(f"missing gate config.json: {gate_config_path}")
@@ -1006,12 +1013,14 @@ def main() -> None:
             gate_cfg = json.load(handle)
         rag_outputs, rag_metadata = _run_rag_bundle(
             input_root, gate_skills, skills, vote_rows, handler, gate_cfg, output_root,
-            use_rag=args.policy in {"rag", "rag_matrix"},
+            use_rag=args.policy in {"rag", "rag_plus", "rag_matrix"},
             matrix_mode=args.policy == "rag_matrix",
             matrix_samples=args.matrix_samples or 1,
+            retrieval_k=7 if args.policy == "rag_plus" else len(skills),
+            primary_method=args.policy,
         )
 
-    if args.policy not in {"rag", "no_rag", "rag_matrix"}:
+    if args.policy not in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
         output_root.mkdir(parents=True)
     with (output_root / "vote_results.jsonl").open("w", encoding="utf-8") as handle:
         for row in vote_rows:
@@ -1064,7 +1073,7 @@ def main() -> None:
             "pure_reliability_soft": score_mean(vote_rows, "pure_reliability_answer_soft"),
             "override_count": sum(1 for row in vote_rows if row["coalition"]["overridden"]),
         }
-    if args.policy in {"rag", "no_rag", "rag_matrix"}:
+    if args.policy in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
         summary[args.policy] = {method: _method_summary(rows) for method, rows in rag_outputs.items()}
         summary[f"{args.policy}_metadata"] = {
             **rag_metadata, "gate_root": str(Path(args.gate_root).resolve())

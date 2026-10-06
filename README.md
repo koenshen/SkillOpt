@@ -167,6 +167,12 @@ python test-phase/test_vote_result.py \
   --dataset searchqa \
   --policy rag_matrix \
   --matrix-samples 5
+# ablation with fine-grain
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261004_015929_top_k_numskills9 \
+  --dataset searchqa \
+  --policy rag_plus \
+  --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
   
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261006_045154_top_k_numskills5 \
@@ -181,7 +187,7 @@ python test-phase/test_vote_result.py \
   --gate-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261004_035613
   
 python test-phase/test_vote_result.py \
-  --input-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261006_222851_top_k_numskills3 \
+  --input-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261006_222705_top_k_numskills5 \
   --dataset livemathematicianbench \
   --policy rag \
   --gate-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261005_034349
