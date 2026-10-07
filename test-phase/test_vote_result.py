@@ -536,13 +536,65 @@ def _is_unanimous_vote(row: dict, skill_count: int) -> bool:
     )
 
 
+def _format_current_candidates(row: dict) -> str:
+    lines = [
+        "## Candidate Answers",
+        "These are unverified answers produced by the selected skills for the current question."
+        " They may be wrong and must not be treated as ground truth.",
+    ]
+    for answer_row in row.get("answers", []):
+        skill = f"skill_{answer_row.get('rank', '?')}"
+        answer = answer_row.get("answer", "") if answer_row.get("valid_vote") else "<invalid answer>"
+        lines.append(f"{skill}: {answer}")
+    return "\n".join(lines)
+
+
+def _format_history_reference_examples(
+    neighbours: list[str],
+    gate_items_by_id: dict[str, dict],
+    gate_skills: list[SkillResults],
+    handler: DatasetHandler,
+) -> str:
+    blocks = ["## Retrieved Reference Examples"]
+    for example_index, question_id in enumerate(neighbours, 1):
+        item = gate_items_by_id[question_id]
+        first_row = gate_skills[0].rows_by_id[question_id]
+        question = item.get("question", first_row.get("question", ""))
+        choices = item.get("choices") or []
+        choice_text = ""
+        if choices:
+            choice_text = "\nChoices:\n" + "\n".join(
+                f"{choice.get('label', '')}. {choice.get('text', '')}"
+                for choice in choices
+            )
+        candidate_lines = []
+        for skill in gate_skills:
+            historical_row = skill.rows_by_id.get(question_id, {})
+            answer = handler.extract_answer(historical_row)
+            if not answer or historical_row.get("phase") in {"timeout", "error"}:
+                answer = "<invalid answer>"
+            candidate_lines.append(f"skill_{skill.rank}: {answer}")
+        gold_answers = get_gold_answers(first_row)
+        correct_answer = gold_answers[0] if gold_answers else "<unavailable>"
+        blocks.append(
+            f"\n### Example {example_index}\n\n"
+            f"#### Example Question\n{question}{choice_text}\n\n"
+            "#### Example Candidate Answers\n"
+            + "\n".join(candidate_lines)
+            + f"\n\n#### Example Correct Answer\n{correct_answer}"
+        )
+    return "\n".join(blocks)
+
+
 def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     skills: list[SkillResults], base_rows: list[dict],
                     handler: DatasetHandler, cfg: dict,
                     output_root: Path, use_rag: bool = True,
                     matrix_mode: bool = False, matrix_samples: int = 1,
                     retrieval_k: int | None = None,
-                    primary_method: str = "rag") -> tuple[dict, dict]:
+                    primary_method: str = "rag",
+                    history_mode: bool = False,
+                    include_current_candidates: bool = False) -> tuple[dict, dict]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import hashlib
     from scripts.eval_only import get_adapter
@@ -579,6 +631,8 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
         retrieval_k = k
     if retrieval_k <= 0:
         raise ValueError("retrieval_k must be positive")
+    if history_mode and not use_rag:
+        raise ValueError("history_mode requires use_rag=True")
     missing = set(row["id"] for row in base_rows) - items_by_id.keys()
     if missing:
         raise ValueError(f"test IDs missing from dataset: {sorted(missing)}")
@@ -660,15 +714,26 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                             {**detail, "gate_ids": neighbours,
                              "skill_reliabilities": local_reliability},
                         )
-                examples = "\n\n".join(
-                    handler.format_example(
-                        gate_items_by_id[qid], gate_skills[0].rows_by_id[qid]
+                if history_mode:
+                    examples = _format_history_reference_examples(
+                        neighbours, gate_items_by_id, gate_skills, handler
                     )
-                    if handler.format_example is not None else
-                    f"Example question:\n{gate_skills[0].rows_by_id[qid]['question']}\n\n"
-                    f"Example answer:\n{get_gold_answers(gate_skills[0].rows_by_id[qid])[0]}"
-                    for qid in neighbours
-                )
+                    if include_current_candidates:
+                        examples = (
+                            _format_current_candidates(row)
+                            + "\n\n"
+                            + examples
+                        )
+                else:
+                    examples = "\n\n".join(
+                        handler.format_example(
+                            gate_items_by_id[qid], gate_skills[0].rows_by_id[qid]
+                        )
+                        if handler.format_example is not None else
+                        f"Example question:\n{gate_skills[0].rows_by_id[qid]['question']}\n\n"
+                        f"Example answer:\n{get_gold_answers(gate_skills[0].rows_by_id[qid])[0]}"
+                        for qid in neighbours
+                    )
                 context.update(
                     item=items_by_id[row["id"]],
                     examples=examples,
@@ -863,6 +928,8 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
         "L": retrieval_k,
         "matrix_mode": matrix_mode,
         "matrix_samples": matrix_samples if matrix_mode else None,
+        "history_mode": history_mode,
+        "include_current_candidates": include_current_candidates,
         "disagreement_count": len(disagreement),
         "stage2_unanimous_count": len(stage2_unanimous_questions),
         "stage3_question_count": len(third_questions),
@@ -905,6 +972,8 @@ def default_output_root(input_root: Path, policy: str) -> Path:
         "coalition": "_coalition",
         "rag": "_rag",
         "rag_plus": "_rag_plus",
+        "rag_plus_history": "_rag_plus_history",
+        "rag_plus_history_candidate": "_rag_plus_history_candidate",
         "no_rag": "_no_rag",
         "rag_matrix": "_rag_matrix",
     }.get(policy, "_vote")
@@ -922,7 +991,11 @@ def main() -> None:
     parser.add_argument("--gate-root")
     parser.add_argument(
         "--policy",
-        choices=("majority", "coalition", "rag", "rag_plus", "no_rag", "rag_matrix"),
+        choices=(
+            "majority", "coalition", "rag", "rag_plus",
+            "rag_plus_history", "rag_plus_history_candidate",
+            "no_rag", "rag_matrix",
+        ),
         default="majority",
     )
     parser.add_argument("--matrix-samples", type=int)
@@ -937,9 +1010,15 @@ def main() -> None:
     elif args.matrix_samples is not None:
         parser.error("--matrix-samples is only valid with --policy rag_matrix")
 
-    if args.policy in {"coalition", "rag", "rag_plus", "no_rag", "rag_matrix"}:
+    if args.policy in {
+        "coalition", "rag", "rag_plus", "rag_plus_history",
+        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+    }:
         if not args.gate_root:
-            if args.policy in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
+            if args.policy in {
+                "rag", "rag_plus", "rag_plus_history",
+                "rag_plus_history_candidate", "no_rag", "rag_matrix",
+            }:
                 _, selection = _source_selection(Path(args.input_root).expanduser().resolve())
                 args.gate_root = selection.get("source_result_root")
             if not args.gate_root:
@@ -964,7 +1043,10 @@ def main() -> None:
     skills = load_skill_results(input_root)
     gate_skills = None
     gate_stats = None
-    if args.policy in {"coalition", "rag", "rag_plus", "no_rag", "rag_matrix"}:
+    if args.policy in {
+        "coalition", "rag", "rag_plus", "rag_plus_history",
+        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+    }:
         gate_root = Path(args.gate_root).expanduser().resolve()
         gate_skills = _selected_gate_skills(input_root, gate_root, skills, args.dataset)
         if args.policy == "coalition":
@@ -1005,7 +1087,10 @@ def main() -> None:
 
     rag_outputs = None
     rag_metadata = None
-    if args.policy in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
+    if args.policy in {
+        "rag", "rag_plus", "rag_plus_history",
+        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+    }:
         gate_config_path = Path(args.gate_root).expanduser().resolve() / "config.json"
         if not gate_config_path.is_file():
             raise FileNotFoundError(f"missing gate config.json: {gate_config_path}")
@@ -1013,14 +1098,29 @@ def main() -> None:
             gate_cfg = json.load(handle)
         rag_outputs, rag_metadata = _run_rag_bundle(
             input_root, gate_skills, skills, vote_rows, handler, gate_cfg, output_root,
-            use_rag=args.policy in {"rag", "rag_plus", "rag_matrix"},
+            use_rag=args.policy in {
+                "rag", "rag_plus", "rag_plus_history",
+                "rag_plus_history_candidate", "rag_matrix",
+            },
             matrix_mode=args.policy == "rag_matrix",
             matrix_samples=args.matrix_samples or 1,
-            retrieval_k=7 if args.policy == "rag_plus" else len(skills),
+            retrieval_k=(
+                7 if args.policy in {
+                    "rag_plus", "rag_plus_history",
+                    "rag_plus_history_candidate",
+                } else len(skills)
+            ),
             primary_method=args.policy,
+            history_mode=args.policy in {
+                "rag_plus_history", "rag_plus_history_candidate",
+            },
+            include_current_candidates=args.policy == "rag_plus_history_candidate",
         )
 
-    if args.policy not in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
+    if args.policy not in {
+        "rag", "rag_plus", "rag_plus_history",
+        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+    }:
         output_root.mkdir(parents=True)
     with (output_root / "vote_results.jsonl").open("w", encoding="utf-8") as handle:
         for row in vote_rows:
@@ -1073,7 +1173,10 @@ def main() -> None:
             "pure_reliability_soft": score_mean(vote_rows, "pure_reliability_answer_soft"),
             "override_count": sum(1 for row in vote_rows if row["coalition"]["overridden"]),
         }
-    if args.policy in {"rag", "rag_plus", "no_rag", "rag_matrix"}:
+    if args.policy in {
+        "rag", "rag_plus", "rag_plus_history",
+        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+    }:
         summary[args.policy] = {method: _method_summary(rows) for method, rows in rag_outputs.items()}
         summary[f"{args.policy}_metadata"] = {
             **rag_metadata, "gate_root": str(Path(args.gate_root).resolve())
