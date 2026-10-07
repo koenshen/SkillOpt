@@ -637,6 +637,7 @@ def select_cover_vote_last(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--input-root", type=Path, required=True)
     parser.add_argument(
         "--mode",
         choices=(
@@ -655,7 +656,7 @@ def main() -> None:
     parser.add_argument("--num-skills", type=int, required=True)
     args = parser.parse_args()
 
-    root = RESULT_ROOT.resolve()
+    root = args.input_root.expanduser().resolve()
     with (root / "config.json").open(encoding="utf-8") as handle:
         cfg = json.load(handle)
 
