@@ -6,13 +6,35 @@ uv venv --python 3.11.15
 source .venv/bin/activate
 uv pip install -r requirements.txt
 
-export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
-export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
-export OPENAI_COMPATIBLE_MODEL="bailian/deepseek-v4-flash-0731"
+export OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+export TARGET_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+export SKILLOPT_WORKERS=24
+
+# default workers: searchqa=24,officeqa=4,livemath=64
 
 export EMBEDDING_BASE_URL="https://api.siliconflow.cn/v1/embeddings"
 export EMBEDDING_API_KEY="sk-xxx"
 export EMBEDDING_MODEL="BAAI/bge-m3"
+
+export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
+export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
+export OPENAI_COMPATIBLE_MODEL="deepseek-v4-1-flash/huoshan/huoshan"
+
+export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
+export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
+export OPENAI_COMPATIBLE_MODEL="glm-5.3-flash/tencent/sfb"
+
+export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
+export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
+export OPENAI_COMPATIBLE_MODEL="gemini-3.8-flash/vertex_L/qwa"
+
+export OPENAI_COMPATIBLE_BASE_URL="http://106.75.235.194:6077/v1"
+export OPENAI_COMPATIBLE_API_KEY="empty"
+export OPENAI_COMPATIBLE_MODEL="Qwen3.8-27B"
+
+export OPENAI_COMPATIBLE_BASE_URL="https://tokenhub.sensetime.com/v1"
+export OPENAI_COMPATIBLE_API_KEY="sk-xxx"
+export OPENAI_COMPATIBLE_MODEL="gpt-5.4-nano"
 ```
 
 ## 261003 self command - data download
@@ -51,14 +73,18 @@ hf download databricks/officeqa \
 python scripts/train.py \
   --config configs/searchqa/default.yaml \
   --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
     model.backend=openai_compatible \
     model.optimizer_backend=openai_compatible \
     model.target_backend=openai_compatible \
-    model.optimizer=bailian/deepseek-v4-flash-0731 \
-    model.target=bailian/deepseek-v4-flash-0731
+    model.optimizer=deepseek-v4-1-flash/huoshan/huoshan \
+    model.target=deepseek-v4-1-flash/huoshan/huoshan
 python scripts/train.py \
   --config configs/searchqa/default.yaml \
   --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
     model.backend=openai_compatible \
     model.optimizer_backend=openai_compatible \
     model.target_backend=openai_compatible \
@@ -67,14 +93,8 @@ python scripts/train.py \
 python scripts/train.py \
   --config configs/searchqa/default.yaml \
   --cfg-options \
-    model.backend=openai_compatible \
-    model.optimizer_backend=openai_compatible \
-    model.target_backend=openai_compatible \
-    model.optimizer=gemini-3.8-flash/vertex_L/qwa \
-    model.target=gemini-3.8-flash/vertex_L/qwa
-python scripts/train.py \
-  --config configs/searchqa/default.yaml \
-  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
     model.backend=openai_compatible \
     model.optimizer_backend=openai_compatible \
     model.target_backend=openai_compatible \
@@ -83,49 +103,123 @@ python scripts/train.py \
 python scripts/train.py \
   --config configs/searchqa/default.yaml \
   --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
     model.backend=openai_compatible \
     model.optimizer_backend=openai_compatible \
     model.target_backend=openai_compatible \
     model.optimizer=gpt-5.4-nano \
     model.target=gpt-5.4-nano
-    
-export ALFWORLD_DATA="$HOME/.cache/alfworld"
-python scripts/train.py \
-  --config configs/alfworld/default.yaml \
-  --cfg-options \
-    model.backend=openai_compatible \
-    model.optimizer_backend=openai_compatible \
-    model.target_backend=openai_compatible \
-    model.optimizer=bailian/deepseek-v4-flash-0731 \
-    model.target=bailian/deepseek-v4-flash-0731
 
-python scripts/train.py \
-  --config configs/spreadsheetbench/default.yaml \
-  --cfg-options \
-    model.backend=openai_compatible \
-    model.optimizer_backend=openai_compatible \
-    model.target_backend=openai_compatible \
-    model.optimizer=bailian/deepseek-v4-flash-0731 \
-    model.target=bailian/deepseek-v4-flash-0731
-    
+
 python scripts/train.py \
   --config configs/livemathematicianbench/default.yaml \
   --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
     model.backend=openai_compatible \
     model.optimizer_backend=openai_compatible \
     model.target_backend=openai_compatible \
-    model.optimizer=bailian/deepseek-v4-flash-0731 \
-    model.target=bailian/deepseek-v4-flash-0731
-    
+    model.optimizer=deepseek-v4-1-flash/huoshan/huoshan \
+    model.target=deepseek-v4-1-flash/huoshan/huoshan
+python scripts/train.py \
+  --config configs/livemathematicianbench/default.yaml \
+  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=glm-5.3-flash/tencent/sfb \
+    model.target=glm-5.3-flash/tencent/sfb
+python scripts/train.py \
+  --config configs/livemathematicianbench/default.yaml \
+  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=Qwen3.8-27B \
+    model.target=Qwen3.8-27B
+python scripts/train.py \
+  --config configs/livemathematicianbench/default.yaml \
+  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=gpt-5.4-nano \
+    model.target=gpt-5.4-nano
+
+
 python scripts/train.py \
   --config configs/officeqa/default.yaml \
   --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
     env.data_dirs=data/raw/officeqa/treasury_bulletins_parsed/transformed \
     model.backend=openai_compatible \
     model.optimizer_backend=openai_compatible \
     model.target_backend=openai_compatible \
-    model.optimizer=bailian/deepseek-v4-flash-0731 \
-    model.target=bailian/deepseek-v4-flash-0731
+    model.optimizer=deepseek-v4-1-flash/huoshan/huoshan \
+    model.target=deepseek-v4-1-flash/huoshan/huoshan
+python scripts/train.py \
+  --config configs/officeqa/default.yaml \
+  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
+    env.data_dirs=data/raw/officeqa/treasury_bulletins_parsed/transformed \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=glm-5.3-flash/tencent/sfb \
+    model.target=glm-5.3-flash/tencent/sfb
+python scripts/train.py \
+  --config configs/officeqa/default.yaml \
+  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
+    env.data_dirs=data/raw/officeqa/treasury_bulletins_parsed/transformed \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=Qwen3.8-27B \
+    model.target=Qwen3.8-27B
+python scripts/train.py \
+  --config configs/officeqa/default.yaml \
+  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
+    env.data_dirs=data/raw/officeqa/treasury_bulletins_parsed/transformed \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=gpt-5.4-nano \
+    model.target=gpt-5.4-nano
+
+
+export ALFWORLD_DATA="$HOME/.cache/alfworld"
+python scripts/train.py \
+  --config configs/alfworld/default.yaml \
+  --cfg-options \
+    env.max_completion_tokens=20480
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=deepseek-v4-1-flash/huoshan/huoshan \
+    model.target=deepseek-v4-1-flash/huoshan/huoshan
+
+python scripts/train.py \
+  --config configs/spreadsheetbench/default.yaml \
+  --cfg-options \
+    env.max_completion_tokens=20480
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=deepseek-v4-1-flash/huoshan/huoshan \
+    model.target=deepseek-v4-1-flash/huoshan/huoshan
 ```
 
 ## 261003 self command - # self test
