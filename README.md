@@ -183,7 +183,11 @@ python test-phase/test_vote_result.py \
   --dataset searchqa \
   --policy rag_plus_history_candidate \
   --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
-  
+python test-phase/test_vote_result.py \
+  --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261004_015929_top_k_numskills9 \
+  --dataset searchqa \
+  --policy rag_plus_history_show_self \
+  --gate-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261003_012315
   
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261006_045154_top_k_numskills5 \

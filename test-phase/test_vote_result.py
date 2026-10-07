@@ -554,6 +554,8 @@ def _format_history_reference_examples(
     gate_items_by_id: dict[str, dict],
     gate_skills: list[SkillResults],
     handler: DatasetHandler,
+    only_skill_rank: int | None = None,
+    self_answer_heading: bool = False,
 ) -> str:
     blocks = ["## Retrieved Reference Examples"]
     for example_index, question_id in enumerate(neighbours, 1):
@@ -569,6 +571,8 @@ def _format_history_reference_examples(
             )
         candidate_lines = []
         for skill in gate_skills:
+            if only_skill_rank is not None and skill.rank != only_skill_rank:
+                continue
             historical_row = skill.rows_by_id.get(question_id, {})
             answer = handler.extract_answer(historical_row)
             if not answer or historical_row.get("phase") in {"timeout", "error"}:
@@ -576,10 +580,14 @@ def _format_history_reference_examples(
             candidate_lines.append(f"skill_{skill.rank}: {answer}")
         gold_answers = get_gold_answers(first_row)
         correct_answer = gold_answers[0] if gold_answers else "<unavailable>"
+        answer_heading = (
+            "#### Current Skill Answers\n"
+            if self_answer_heading else "#### Example Candidate Answers\n"
+        )
         blocks.append(
             f"\n### Example {example_index}\n\n"
             f"#### Example Question\n{question}{choice_text}\n\n"
-            "#### Example Candidate Answers\n"
+            + answer_heading
             + "\n".join(candidate_lines)
             + f"\n\n#### Example Correct Answer\n{correct_answer}"
         )
@@ -594,7 +602,8 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     retrieval_k: int | None = None,
                     primary_method: str = "rag",
                     history_mode: bool = False,
-                    include_current_candidates: bool = False) -> tuple[dict, dict]:
+                    include_current_candidates: bool = False,
+                    history_self_mode: bool = False) -> tuple[dict, dict]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import hashlib
     from scripts.eval_only import get_adapter
@@ -633,6 +642,8 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
         raise ValueError("retrieval_k must be positive")
     if history_mode and not use_rag:
         raise ValueError("history_mode requires use_rag=True")
+    if history_self_mode and not history_mode:
+        raise ValueError("history_self_mode requires history_mode=True")
     missing = set(row["id"] for row in base_rows) - items_by_id.keys()
     if missing:
         raise ValueError(f"test IDs missing from dataset: {sorted(missing)}")
@@ -715,16 +726,32 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                              "skill_reliabilities": local_reliability},
                         )
                 if history_mode:
-                    examples = _format_history_reference_examples(
-                        neighbours, gate_items_by_id, gate_skills, handler
-                    )
-                    if include_current_candidates:
-                        examples = (
-                            _format_current_candidates(row)
-                            + "\n\n"
-                            + examples
+                    examples_by_rank = None
+                    if history_self_mode:
+                        examples = ""
+                        examples_by_rank = {
+                            skill.rank: _format_history_reference_examples(
+                                neighbours,
+                                gate_items_by_id,
+                                gate_skills,
+                                handler,
+                                only_skill_rank=skill.rank,
+                                self_answer_heading=True,
+                            )
+                            for skill in skills
+                        }
+                    else:
+                        examples = _format_history_reference_examples(
+                            neighbours, gate_items_by_id, gate_skills, handler
                         )
+                        if include_current_candidates:
+                            examples = (
+                                _format_current_candidates(row)
+                                + "\n\n"
+                                + examples
+                            )
                 else:
+                    examples_by_rank = None
                     examples = "\n\n".join(
                         handler.format_example(
                             gate_items_by_id[qid], gate_skills[0].rows_by_id[qid]
@@ -737,6 +764,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                 context.update(
                     item=items_by_id[row["id"]],
                     examples=examples,
+                    examples_by_rank=examples_by_rank,
                     neighbours=neighbours,
                     run_rag=True,
                 )
@@ -760,7 +788,9 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                     context["item"],
                     skill,
                     content,
-                    context.get("examples", ""),
+                    context.get("examples_by_rank", {}).get(
+                        skill.rank, context.get("examples", "")
+                    ),
                     handler,
                     output_root / "reinference" / f"{skill.rank:03d}_{skill.name}" / question_id,
                     mode_label,
@@ -808,7 +838,9 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
                             context["item"],
                             skill,
                             content,
-                            context["examples"],
+                            context.get("examples_by_rank", {}).get(
+                                skill.rank, context["examples"]
+                            ),
                             handler,
                             output_root / "reinference" / "stage3"
                             / f"{skill.rank:03d}_{skill.name}"
@@ -930,6 +962,7 @@ def _run_rag_bundle(input_root: Path, gate_skills: list[SkillResults],
         "matrix_samples": matrix_samples if matrix_mode else None,
         "history_mode": history_mode,
         "include_current_candidates": include_current_candidates,
+        "history_self_mode": history_self_mode,
         "disagreement_count": len(disagreement),
         "stage2_unanimous_count": len(stage2_unanimous_questions),
         "stage3_question_count": len(third_questions),
@@ -974,6 +1007,7 @@ def default_output_root(input_root: Path, policy: str) -> Path:
         "rag_plus": "_rag_plus",
         "rag_plus_history": "_rag_plus_history",
         "rag_plus_history_candidate": "_rag_plus_history_candidate",
+        "rag_plus_history_show_self": "_rag_plus_history_show_self",
         "no_rag": "_no_rag",
         "rag_matrix": "_rag_matrix",
     }.get(policy, "_vote")
@@ -994,6 +1028,7 @@ def main() -> None:
         choices=(
             "majority", "coalition", "rag", "rag_plus",
             "rag_plus_history", "rag_plus_history_candidate",
+            "rag_plus_history_show_self",
             "no_rag", "rag_matrix",
         ),
         default="majority",
@@ -1012,12 +1047,14 @@ def main() -> None:
 
     if args.policy in {
         "coalition", "rag", "rag_plus", "rag_plus_history",
-        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+        "rag_plus_history_candidate", "rag_plus_history_show_self",
+        "no_rag", "rag_matrix",
     }:
         if not args.gate_root:
             if args.policy in {
                 "rag", "rag_plus", "rag_plus_history",
-                "rag_plus_history_candidate", "no_rag", "rag_matrix",
+                "rag_plus_history_candidate", "rag_plus_history_show_self",
+                "no_rag", "rag_matrix",
             }:
                 _, selection = _source_selection(Path(args.input_root).expanduser().resolve())
                 args.gate_root = selection.get("source_result_root")
@@ -1045,7 +1082,8 @@ def main() -> None:
     gate_stats = None
     if args.policy in {
         "coalition", "rag", "rag_plus", "rag_plus_history",
-        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+        "rag_plus_history_candidate", "rag_plus_history_show_self",
+        "no_rag", "rag_matrix",
     }:
         gate_root = Path(args.gate_root).expanduser().resolve()
         gate_skills = _selected_gate_skills(input_root, gate_root, skills, args.dataset)
@@ -1089,7 +1127,8 @@ def main() -> None:
     rag_metadata = None
     if args.policy in {
         "rag", "rag_plus", "rag_plus_history",
-        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+        "rag_plus_history_candidate", "rag_plus_history_show_self",
+        "no_rag", "rag_matrix",
     }:
         gate_config_path = Path(args.gate_root).expanduser().resolve() / "config.json"
         if not gate_config_path.is_file():
@@ -1100,26 +1139,30 @@ def main() -> None:
             input_root, gate_skills, skills, vote_rows, handler, gate_cfg, output_root,
             use_rag=args.policy in {
                 "rag", "rag_plus", "rag_plus_history",
-                "rag_plus_history_candidate", "rag_matrix",
+                "rag_plus_history_candidate", "rag_plus_history_show_self",
+                "rag_matrix",
             },
             matrix_mode=args.policy == "rag_matrix",
             matrix_samples=args.matrix_samples or 1,
             retrieval_k=(
                 7 if args.policy in {
                     "rag_plus", "rag_plus_history",
-                    "rag_plus_history_candidate",
+                    "rag_plus_history_candidate", "rag_plus_history_show_self",
                 } else len(skills)
             ),
             primary_method=args.policy,
             history_mode=args.policy in {
                 "rag_plus_history", "rag_plus_history_candidate",
+                "rag_plus_history_show_self",
             },
             include_current_candidates=args.policy == "rag_plus_history_candidate",
+            history_self_mode=args.policy == "rag_plus_history_show_self",
         )
 
     if args.policy not in {
         "rag", "rag_plus", "rag_plus_history",
-        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+        "rag_plus_history_candidate", "rag_plus_history_show_self",
+        "no_rag", "rag_matrix",
     }:
         output_root.mkdir(parents=True)
     with (output_root / "vote_results.jsonl").open("w", encoding="utf-8") as handle:
@@ -1175,7 +1218,8 @@ def main() -> None:
         }
     if args.policy in {
         "rag", "rag_plus", "rag_plus_history",
-        "rag_plus_history_candidate", "no_rag", "rag_matrix",
+        "rag_plus_history_candidate", "rag_plus_history_show_self",
+        "no_rag", "rag_matrix",
     }:
         summary[args.policy] = {method: _method_summary(rows) for method, rows in rag_outputs.items()}
         summary[f"{args.policy}_metadata"] = {
