@@ -56,6 +56,38 @@ python scripts/train.py \
     model.target_backend=openai_compatible \
     model.optimizer=bailian/deepseek-v4-flash-0731 \
     model.target=bailian/deepseek-v4-flash-0731
+python scripts/train.py \
+  --config configs/searchqa/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=glm-5.3-flash/tencent/sfb \
+    model.target=glm-5.3-flash/tencent/sfb
+python scripts/train.py \
+  --config configs/searchqa/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=gemini-3.8-flash/vertex_L/qwa \
+    model.target=gemini-3.8-flash/vertex_L/qwa
+python scripts/train.py \
+  --config configs/searchqa/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=Qwen3.8-27B \
+    model.target=Qwen3.8-27B
+python scripts/train.py \
+  --config configs/searchqa/default.yaml \
+  --cfg-options \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=gpt-5.4-nano \
+    model.target=gpt-5.4-nano
     
 export ALFWORLD_DATA="$HOME/.cache/alfworld"
 python scripts/train.py \
