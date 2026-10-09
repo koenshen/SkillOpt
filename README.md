@@ -293,6 +293,7 @@ python test-phase/test_vote_result.py \
   --dataset searchqa \
   --policy rag_matrix \
   --matrix-samples 5
+
 # ablation with fine-grain
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_searchqa_bailian-deepseek-v4-flash-0731_20261004_015929_top_k_numskills9 \
@@ -320,16 +321,46 @@ python test-phase/test_vote_result.py \
   --dataset officeqa \
   --policy rag \
   --gate-root outputs/skillopt_officeqa_bailian-deepseek-v4-flash-0731_20261005_040355
-  
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261006_045110_top_k_numskills5 \
   --dataset spreadsheetbench \
   --policy rag \
   --gate-root outputs/skillopt_spreadsheetbench_bailian-deepseek-v4-flash-0731_20261004_035613
-  
 python test-phase/test_vote_result.py \
   --input-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261006_222705_top_k_numskills5 \
   --dataset livemathematicianbench \
   --policy rag \
   --gate-root outputs/skillopt_livemathematicianbench_bailian-deepseek-v4-flash-0731_20261005_034349
+
+
+
+
+
+# 261008-0611
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode best_repeat --num-skills 3
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode top_k --num-skills 3
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode best_repeat --num-skills 5
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode top_k --num-skills 5
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode best_repeat --num-skills 7
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode top_k --num-skills 7
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode best_repeat --num-skills 9
+python test-phase/searchqa_test.py --input-root outputs/skillopt_searchqa_gpt-5.4-nano_20261008_040547 --mode top_k --num-skills 9
+
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode best_repeat --num-skills 3
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode top_k --num-skills 3
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode best_repeat --num-skills 5
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode top_k --num-skills 5
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode best_repeat --num-skills 7
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode top_k --num-skills 7
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode best_repeat --num-skills 9
+python test-phase/officeqa_test.py --input-root outputs/skillopt_officeqa_gpt-5.4-nano_20261008_051639 --mode top_k --num-skills 9
+
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode best_repeat --num-skills 3
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode top_k --num-skills 3
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode best_repeat --num-skills 5
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode top_k --num-skills 5
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode best_repeat --num-skills 7
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode top_k --num-skills 7
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode best_repeat --num-skills 9
+python test-phase/livemathematicianbench_test.py --input-root outputs/skillopt_livemathematicianbench_gpt-5.4-nano_20261008_043258 --mode top_k --num-skills 9
 ```
