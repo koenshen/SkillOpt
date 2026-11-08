@@ -23,7 +23,9 @@ case "$MODEL_TAG" in
     TRAIN_ROOT=outputs/skillopt_searchqa_deepseek-v4-1-flash-huoshan-huoshan_20261008_042358
     export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
     export OPENAI_COMPATIBLE_API_KEY=${OPENAI_COMPATIBLE_API_KEY:?OPENAI_COMPATIBLE_API_KEY is not set}
-    export OPENAI_COMPATIBLE_MODEL=deepseek-v4-1-flash/huoshan/huoshan ;;
+    # Training used deepseek-v4-1-flash/huoshan/huoshan; tokenhub now serves it
+    # under this name (the old one returns 503 model_not_found).
+    export OPENAI_COMPATIBLE_MODEL=deepseek-v4.1-flash-0910/huoshan/huoshan ;;
   qwen3827b)
     TRAIN_ROOT=outputs/skillopt_searchqa_Qwen3.8-27B_20261008_050556
     export OPENAI_COMPATIBLE_BASE_URL=http://106.75.235.194:6077/v1
