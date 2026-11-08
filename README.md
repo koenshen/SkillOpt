@@ -370,4 +370,12 @@ python test-phase/livemathematicianbench_test.py --mode best_repeat --num-skills
 python test-phase/livemathematicianbench_test.py --mode top_k --num-skills 5
 python test-phase/livemathematicianbench_test.py --mode best_repeat --num-skills 7
 python test-phase/livemathematicianbench_test.py --mode top_k --num-skills 7
+
+# 261108 searchqa: deepseek-v4-1-flash + Qwen3.8-27B, top_k/best_repeat k=3,5,7 + rag_plus_history_show_self
+# one tmux session per job; logs in logs/<session>.{infer,showself}.log
+export TOKENHUB_API_KEY="sk-xxx"
+export EMBEDDING_API_KEY="sk-xxx"
+bash test-phase/launch_searchqa_dpskv41_qwen.sh        # all 12 jobs
+bash test-phase/launch_searchqa_dpskv41_qwen.sh dpsk   # only deepseek-v4-1-flash (6 jobs)
+bash test-phase/launch_searchqa_dpskv41_qwen.sh qwen   # only Qwen3.8-27B (6 jobs)
 ```
