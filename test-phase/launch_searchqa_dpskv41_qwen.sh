@@ -10,6 +10,8 @@
 # run_searchqa_job.sh then sets base URL / model (and "empty" key for Qwen) per session.
 #
 # Optional: pass "dpsk" or "qwen" to launch only that model's jobs.
+# Optional: export SKILLOPT_WORKERS=12 to override the per-job concurrency
+# (default: the training run's config.json, i.e. 24).
 #
 # Session names: <YYMMDD-HHMM>-skillopt-searchqa-<model>-<mode>-<k>-showself
 # Logs:          logs/<session>.infer.log, logs/<session>.showself.log
@@ -29,6 +31,7 @@ launch() {  # <session_name> <args for run_searchqa_job.sh...>
   # afterwards so the output stays visible after the job ends.
   tmux new-session -d -s "$name" -c "$REPO" \
     -e "OPENAI_COMPATIBLE_API_KEY=$OPENAI_COMPATIBLE_API_KEY" -e "EMBEDDING_API_KEY=$EMBEDDING_API_KEY" \
+    -e "SKILLOPT_WORKERS=${SKILLOPT_WORKERS:-}" \
     "$RUN $* $name; exec bash"
   echo "started: $name"
 }

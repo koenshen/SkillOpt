@@ -420,6 +420,11 @@ def configure_runtime(cfg: dict) -> None:
         raise RuntimeError("missing required environment variable(s): " + ", ".join(missing))
     if backend != "openai_compatible":
         raise RuntimeError(f"config target_backend={backend!r}; expected 'openai_compatible'")
+    # Optional concurrency override; otherwise keep the training run's workers.
+    workers_override = os.environ.get("SKILLOPT_WORKERS", "").strip()
+    if workers_override:
+        cfg["workers"] = int(workers_override)
+        log(f"[runtime] workers={cfg['workers']} (from SKILLOPT_WORKERS)")
     set_target_backend(backend)
     set_target_deployment(values["OPENAI_COMPATIBLE_MODEL"])
     set_reasoning_effort(cfg.get("reasoning_effort") or None)

@@ -378,4 +378,5 @@ export EMBEDDING_API_KEY="sk-xxx"
 bash test-phase/launch_searchqa_dpskv41_qwen.sh        # all 12 jobs
 bash test-phase/launch_searchqa_dpskv41_qwen.sh dpsk   # only deepseek-v4-1-flash (6 jobs)
 bash test-phase/launch_searchqa_dpskv41_qwen.sh qwen   # only Qwen3.8-27B (6 jobs)
+SKILLOPT_WORKERS=12 bash test-phase/launch_searchqa_dpskv41_qwen.sh qwen   # lower per-job concurrency (default 24)
 ```
