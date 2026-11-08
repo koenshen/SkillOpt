@@ -8,8 +8,8 @@
 #   run_searchqa_job.sh <model_tag> existing <inference_dir> <job_name>  # show_self only
 #
 # Required environment (passed in by the launcher):
-#   TOKENHUB_API_KEY   key for https://tokenhub.sensetime.com/v1 (dpskv41flash only)
-#   EMBEDDING_API_KEY  key for the embedding endpoint used by the RAG step
+#   OPENAI_COMPATIBLE_API_KEY  tokenhub key (used by dpskv41flash; qwen3827b overrides it with "empty")
+#   EMBEDDING_API_KEY          key for the embedding endpoint used by the RAG step
 set -euo pipefail
 
 MODEL_TAG=$1; MODE=$2; ARG=$3; JOB=$4
@@ -22,7 +22,7 @@ case "$MODEL_TAG" in
   dpskv41flash)
     TRAIN_ROOT=outputs/skillopt_searchqa_deepseek-v4-1-flash-huoshan-huoshan_20261008_042358
     export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
-    export OPENAI_COMPATIBLE_API_KEY=${TOKENHUB_API_KEY:?TOKENHUB_API_KEY is not set}
+    export OPENAI_COMPATIBLE_API_KEY=${OPENAI_COMPATIBLE_API_KEY:?OPENAI_COMPATIBLE_API_KEY is not set}
     export OPENAI_COMPATIBLE_MODEL=deepseek-v4-1-flash/huoshan/huoshan ;;
   qwen3827b)
     TRAIN_ROOT=outputs/skillopt_searchqa_Qwen3.8-27B_20261008_050556

@@ -4,16 +4,17 @@
 # rag_plus_history_show_self), one tmux session per job.
 #
 # Before running, export in the launching shell:
-#   export TOKENHUB_API_KEY="sk-xxx"    # tokenhub key (deepseek-v4-1-flash)
-#   export EMBEDDING_API_KEY="sk-xxx"   # siliconflow key (bge-m3)
-# The keys are handed to each tmux session with `tmux new-session -e`.
+#   export OPENAI_COMPATIBLE_API_KEY="sk-xxx"  # tokenhub key (deepseek-v4-1-flash)
+#   export EMBEDDING_API_KEY="sk-xxx"          # siliconflow key (bge-m3)
+# The keys are handed to each tmux session with `tmux new-session -e`;
+# run_searchqa_job.sh then sets base URL / model (and "empty" key for Qwen) per session.
 #
 # Optional: pass "dpsk" or "qwen" to launch only that model's jobs.
 #
 # Session names: <YYMMDD-HHMM>-skillopt-searchqa-<model>-<mode>-<k>-showself
 # Logs:          logs/<session>.infer.log, logs/<session>.showself.log
 set -euo pipefail
-: "${TOKENHUB_API_KEY:?export TOKENHUB_API_KEY first}"
+: "${OPENAI_COMPATIBLE_API_KEY:?export OPENAI_COMPATIBLE_API_KEY first}"
 : "${EMBEDDING_API_KEY:?export EMBEDDING_API_KEY first}"
 
 ONLY=${1:-all}
@@ -25,7 +26,7 @@ launch() {  # <session_name> <args for run_searchqa_job.sh...>
   local name=$1; shift
   if tmux has-session -t "=$name" 2>/dev/null; then echo "exists: $name"; return; fi
   tmux new-session -d -s "$name" -c "$REPO" \
-    -e "TOKENHUB_API_KEY=$TOKENHUB_API_KEY" -e "EMBEDDING_API_KEY=$EMBEDDING_API_KEY"
+    -e "OPENAI_COMPATIBLE_API_KEY=$OPENAI_COMPATIBLE_API_KEY" -e "EMBEDDING_API_KEY=$EMBEDDING_API_KEY"
   tmux send-keys -t "=$name" "$RUN $* $name" Enter
   echo "started: $name"
 }
