@@ -25,9 +25,11 @@ RUN="bash $REPO/test-phase/run_searchqa_job.sh"
 launch() {  # <session_name> <args for run_searchqa_job.sh...>
   local name=$1; shift
   if tmux has-session -t "=$name" 2>/dev/null; then echo "exists: $name"; return; fi
+  # The job runs as the session's command; `exec bash` keeps the pane open
+  # afterwards so the output stays visible after the job ends.
   tmux new-session -d -s "$name" -c "$REPO" \
-    -e "OPENAI_COMPATIBLE_API_KEY=$OPENAI_COMPATIBLE_API_KEY" -e "EMBEDDING_API_KEY=$EMBEDDING_API_KEY"
-  tmux send-keys -t "=$name" "$RUN $* $name" Enter
+    -e "OPENAI_COMPATIBLE_API_KEY=$OPENAI_COMPATIBLE_API_KEY" -e "EMBEDDING_API_KEY=$EMBEDDING_API_KEY" \
+    "$RUN $* $name; exec bash"
   echo "started: $name"
 }
 
