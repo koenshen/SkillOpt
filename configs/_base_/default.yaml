@@ -109,6 +109,8 @@ evaluation:
   sel_env_num: 0
   test_env_num: 0
   eval_test: true
+  selection_early_stop: false     # exact lineage-ordered early stop of selection eval (hard gate only)
+  selection_early_stop_batch: 0   # items per batch; 0 = env workers
 
 env:
   name: ""

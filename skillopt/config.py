@@ -156,6 +156,8 @@ _FLATTEN_MAP: dict[str, str] = {
     "evaluation.sel_env_num": "sel_env_num",
     "evaluation.test_env_num": "test_env_num",
     "evaluation.eval_test": "eval_test",
+    "evaluation.selection_early_stop": "selection_early_stop",
+    "evaluation.selection_early_stop_batch": "selection_early_stop_batch",
     "env.name": "env",
     "env.skill_init": "skill_init",
     "env.out_root": "out_root",

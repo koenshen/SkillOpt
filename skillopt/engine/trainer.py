@@ -24,6 +24,7 @@ from collections import defaultdict
 
 from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
+from skillopt.evaluation.early_stop import evaluate_with_early_stop, update_history
 from skillopt.evaluation.gate import GateResult, evaluate_gate, select_gate_score
 from skillopt.gradient.aggregate import merge_patches
 from skillopt.optimizer.meta_skill import run_meta_skill
@@ -1122,6 +1123,45 @@ class ReflACTTrainer:
                 f"gate[{gate_metric}]={current_score:.4f}"
             )
 
+        # ── Selection early stop (off by default) ────────────────────────
+        # Exact: only skips items once the candidate provably cannot pass
+        # the strict ``cand > current`` gate.  Needs the plain hard gate.
+        sel_early_stop = bool(cfg.get("selection_early_stop", False))
+        if sel_early_stop and not (
+            use_gate and gate_metric == "hard" and not use_semantic_density
+        ):
+            print(
+                "  [selection early stop] disabled: requires use_gate=true, "
+                "gate_metric=hard, use_semantic_density=false"
+            )
+            sel_early_stop = False
+        sel_early_stop_batch = int(
+            cfg.get("selection_early_stop_batch", 0) or cfg.get("workers", 0) or 24
+        )
+        # Per-item hard scores of every skill version evaluated so far,
+        # used only to order items (rebuilt from disk so resume works).
+        sel_history: dict[str, list[float]] = {}
+        if sel_early_stop:
+            hist_files = [os.path.join(out_root, "selection_eval_baseline", "results.jsonl")]
+            hist_files += sorted(glob.glob(
+                os.path.join(out_root, "steps", "step_*", "selection_eval", "results.jsonl")
+            ))
+            for path in hist_files:
+                if not os.path.exists(path):
+                    continue
+                with open(path) as f:
+                    rows = []
+                    for line in f:
+                        try:
+                            rows.append(json.loads(line))
+                        except Exception:
+                            pass
+                update_history(sel_history, rows)
+            print(
+                f"  [selection early stop] on: batch={sel_early_stop_batch}, "
+                f"history from {len(hist_files)} result files, {len(sel_history)} items"
+            )
+
         # ── Training loop ────────────────────────────────────────────────
         t_loop_start = time.time()
 
@@ -1523,6 +1563,8 @@ class ReflACTTrainer:
 
                 # ⑥ EVALUATE ───────────────────────────────────────────────
                 t_phase = time.time()
+                tokens_before_eval = get_token_summary()
+                sel_es_outcome = None
                 if cand_hash in sel_cache:
                     cand_hard, cand_soft = sel_cache[cand_hash]
                     print(
@@ -1537,12 +1579,60 @@ class ReflACTTrainer:
                     )
                     print(f"    [6/6 EVALUATE] selection items={sel_n}")
                     sel_eval_dir = os.path.join(step_dir, "selection_eval")
-                    sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
-                    cand_hard, cand_soft = compute_score(sel_results)
-                    sel_cache[cand_hash] = (cand_hard, cand_soft)
+                    if sel_early_stop and isinstance(sel_env, list) and all(
+                        isinstance(it, dict) and "id" in it for it in sel_env
+                    ):
+                        sel_es_outcome = evaluate_with_early_stop(
+                            items=sel_env,
+                            history=sel_history,
+                            run_items=lambda prefix: adapter.rollout(
+                                prefix, candidate_skill, sel_eval_dir
+                            ),
+                            current_score=current_score,
+                            batch_size=sel_early_stop_batch,
+                            log=lambda m: print(f"    [6/6 EVALUATE] {m}"),
+                        )
+                        sel_results = sel_es_outcome.results
+                        update_history(sel_history, sel_results)
+                        if sel_es_outcome.stopped:
+                            # Only an upper bound is known; it is <= current,
+                            # so the gate rejects exactly as a full eval would.
+                            cand_hard = sel_es_outcome.upper_bound
+                            cand_soft = compute_score(sel_results)[1]
+                        else:
+                            cand_hard, cand_soft = compute_score(sel_results)
+                            sel_cache[cand_hash] = (cand_hard, cand_soft)
+                    else:
+                        if sel_early_stop:
+                            print("    [6/6 EVALUATE] early stop unsupported for this env; full eval")
+                        sel_results = adapter.rollout(sel_env, candidate_skill, sel_eval_dir)
+                        cand_hard, cand_soft = compute_score(sel_results)
+                        sel_cache[cand_hash] = (cand_hard, cand_soft)
+                        if sel_early_stop:
+                            update_history(sel_history, sel_results)
 
                 step_rec["selection_hard"] = cand_hard
                 step_rec["selection_soft"] = cand_soft
+                if sel_es_outcome is not None:
+                    step_rec["selection_early_stop"] = {
+                        "stopped": sel_es_outcome.stopped,
+                        "n_evaluated": sel_es_outcome.n_evaluated,
+                        "n_total": sel_es_outcome.n_total,
+                        "upper_bound": sel_es_outcome.upper_bound,
+                        "lower_bound": sel_es_outcome.lower_bound,
+                        "batch_size": sel_early_stop_batch,
+                        "batches": sel_es_outcome.batches,
+                    }
+                tokens_after_eval = get_token_summary()
+                step_rec["tokens_selection_eval"] = {
+                    stage: {
+                        k: tokens_after_eval[stage].get(k, 0)
+                        - tokens_before_eval.get(stage, {}).get(k, 0)
+                        for k in ("calls", "prompt_tokens", "completion_tokens")
+                    }
+                    for stage in tokens_after_eval
+                    if stage != "_total"
+                }
 
                 gate = evaluate_gate(
                     candidate_skill=candidate_skill,
@@ -1634,6 +1724,12 @@ class ReflACTTrainer:
                         f"    [6/6 EVALUATE] FORCE-ACCEPT (gate disabled) "
                         f"{score_label}"
                     )
+                elif sel_es_outcome is not None and sel_es_outcome.stopped:
+                    print(
+                        f"    [6/6 EVALUATE] REJECT (early stop "
+                        f"{sel_es_outcome.n_evaluated}/{sel_es_outcome.n_total}) "
+                        f"hard<={cand_hard:.4f} <= current={current_score:.4f}"
+                    )
                 else:
                     print(
                         f"    [6/6 EVALUATE] REJECT "
@@ -1666,7 +1762,12 @@ class ReflACTTrainer:
                         if isinstance(item, dict)
                     ]
                     buf_entry["score_before"] = current_score
-                    buf_entry["score_after"] = cand_gate_score
+                    if sel_es_outcome is not None and sel_es_outcome.stopped:
+                        # Early-stopped: the exact score is unknown, only
+                        # that it cannot exceed this bound.
+                        buf_entry["score_after"] = f"<= {cand_gate_score:.4f}"
+                    else:
+                        buf_entry["score_after"] = cand_gate_score
                     buf_entry["rejected_edits"] = rejected_edits
 
                 step_buffer.append(buf_entry)
