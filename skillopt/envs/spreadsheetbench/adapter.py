@@ -106,7 +106,11 @@ class SpreadsheetBenchAdapter(EnvAdapter):
         results_path = os.path.join(out_dir, "results.jsonl")
         os.makedirs(out_dir, exist_ok=True)
 
-        # Resume support
+        # Resume support: return the saved results only if every requested
+        # item is already done.  Otherwise fall through; the batch runners
+        # skip ids already in results.jsonl and return old + new results, so
+        # a partial file (interrupted run, or a growing prefix from selection
+        # early stop) is completed instead of being returned as is.
         if os.path.exists(results_path):
             existing: list[dict] = []
             with open(results_path) as f:
@@ -115,7 +119,8 @@ class SpreadsheetBenchAdapter(EnvAdapter):
                         existing.append(json.loads(line))
                     except (ValueError, RecursionError, TypeError):
                         pass
-            if existing:
+            done_ids = {str(r.get("id")) for r in existing if isinstance(r, dict)}
+            if existing and all(str(it["id"]) in done_ids for it in items):
                 return existing
 
         if self.mode in ("single", "multi"):
