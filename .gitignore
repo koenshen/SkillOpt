@@ -19,6 +19,8 @@ data/*
 !data/spreadsheetbench_id_split/**
 !data/alfworld_path_split/
 !data/alfworld_path_split/**
+!data/bird_id_split/
+!data/bird_id_split/**
 outputs/
 logs/
 external/

@@ -81,6 +81,11 @@ def _register_builtins() -> None:
     except ImportError:
         pass
     try:
+        from skillopt.envs.bird.adapter import BirdAdapter
+        _ENV_REGISTRY["bird"] = BirdAdapter
+    except ImportError:
+        pass
+    try:
         from skillopt.envs.livemathematicianbench.adapter import LiveMathematicianBenchAdapter
         _ENV_REGISTRY["livemathematicianbench"] = LiveMathematicianBenchAdapter
     except ImportError:

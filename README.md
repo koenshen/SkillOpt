@@ -66,6 +66,12 @@ mkdir -p data/raw/officeqa
 hf download databricks/officeqa \
   --repo-type dataset \
   --local-dir data/raw/officeqa
+
+# BIRD (text-to-SQL): ID split is in data/bird_id_split; prompts/DBs live in bird-text-to-sql-260820 (read-only)
+BIRD_ROOT=/mnt/sdd3/xuancheng/code/github/bird-text-to-sql-260820
+python scripts/materialize_bird.py \
+  --dev-jsonl $BIRD_ROOT/datas/dev_prompt.generated.jsonl \
+  --mini-dev-jsonl $BIRD_ROOT/datas/mini_dev_prompt.generated.jsonl
 ```
 
 ## 261003 self command - train and test
@@ -220,6 +226,17 @@ python scripts/train.py \
     model.target_backend=openai_compatible \
     model.optimizer=deepseek-v4-1-flash/huoshan/huoshan \
     model.target=deepseek-v4-1-flash/huoshan/huoshan
+
+python scripts/train.py \
+  --config configs/bird/default.yaml \
+  --cfg-options \
+    env.workers="${SKILLOPT_WORKERS}" \
+    env.max_completion_tokens="${TARGET_OPENAI_COMPATIBLE_MAX_TOKENS}" \
+    model.backend=openai_compatible \
+    model.optimizer_backend=openai_compatible \
+    model.target_backend=openai_compatible \
+    model.optimizer=deepseek-v4.1-flash-0910/huoshan/huoshan \
+    model.target=deepseek-v4.1-flash-0910/huoshan/huoshan
 ```
 
 ## 261003 self command - # self test

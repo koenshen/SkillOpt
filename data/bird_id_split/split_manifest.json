@@ -1,0 +1,82 @@
+{
+  "benchmark": "BIRD",
+  "manifest_type": "id_split",
+  "source_files": {
+    "dev": "dev_prompt.generated.jsonl",
+    "mini_dev": "mini_dev_prompt.generated.jsonl"
+  },
+  "source_id_field": "question_id",
+  "rule": "test = all of mini-dev; val = stratified sample by (db_id, difficulty) from dev minus mini-dev; train = the rest of dev minus mini-dev",
+  "seed": 42,
+  "counts": {
+    "train": 834,
+    "val": 200,
+    "test": 500
+  },
+  "difficulty": {
+    "train": {
+      "challenging": 35,
+      "moderate": 173,
+      "simple": 626
+    },
+    "val": {
+      "challenging": 8,
+      "moderate": 41,
+      "simple": 151
+    },
+    "test": {
+      "challenging": 102,
+      "moderate": 250,
+      "simple": 148
+    }
+  },
+  "db_id": {
+    "train": {
+      "california_schools": 47,
+      "card_games": 112,
+      "codebase_community": 111,
+      "debit_card_specializing": 27,
+      "european_football_2": 63,
+      "financial": 60,
+      "formula_1": 88,
+      "student_club": 88,
+      "superhero": 62,
+      "thrombosis_prediction": 92,
+      "toxicology": 84
+    },
+    "val": {
+      "california_schools": 12,
+      "card_games": 27,
+      "codebase_community": 26,
+      "debit_card_specializing": 7,
+      "european_football_2": 15,
+      "financial": 14,
+      "formula_1": 20,
+      "student_club": 22,
+      "superhero": 15,
+      "thrombosis_prediction": 21,
+      "toxicology": 21
+    },
+    "test": {
+      "california_schools": 30,
+      "card_games": 52,
+      "codebase_community": 49,
+      "debit_card_specializing": 30,
+      "european_football_2": 51,
+      "financial": 32,
+      "formula_1": 66,
+      "student_club": 48,
+      "superhero": 52,
+      "thrombosis_prediction": 50,
+      "toxicology": 40
+    }
+  },
+  "item_fields": [
+    "id"
+  ],
+  "notes": [
+    "This is an ID manifest, not the BIRD payload.",
+    "Run scripts/materialize_bird.py to build data/bird_split from the prompt files.",
+    "test rows come from the mini-dev file (its SQL/evidence differ from dev for a few questions)."
+  ]
+}

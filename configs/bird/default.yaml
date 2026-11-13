@@ -1,0 +1,40 @@
+_base_: ../_base_/default.yaml
+
+# BIRD text-to-SQL, single turn, scored by execution accuracy (EX).
+# Splits (data/bird_id_split): train = dev minus mini-dev minus val (834),
+# val = 200 stratified from dev minus mini-dev, test = mini-dev (500).
+# Build data/bird_split first with scripts/materialize_bird.py.
+
+model:
+  reasoning_effort: medium
+
+train:
+  train_size: 834
+  batch_size: 40
+  accumulation: 1
+
+gradient:
+  minibatch_size: 8
+  merge_batch_size: 8
+
+optimizer:
+  learning_rate: 4
+
+evaluation:
+  sel_env_num: 0
+  test_env_num: 0
+
+env:
+  name: bird
+  skill_init: skillopt/envs/bird/skills/initial.md
+  split_mode: split_dir
+  split_dir: data/bird_split
+  data_path: ""
+  split_output_dir: ""
+  # Read-only. dev and mini-dev share identical database files.
+  db_root: /mnt/sdd3/xuancheng/code/github/bird-text-to-sql-260820/data_dev/dev_databases
+  exec_timeout: 300      # seconds per chat call
+  sql_timeout: 30        # seconds for predicted + gold SQL, as in the reference EX script
+  max_completion_tokens: 16384
+  workers: 24
+  limit: 0
