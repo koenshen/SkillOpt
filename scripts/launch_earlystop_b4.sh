@@ -13,7 +13,7 @@
 # Optional: pass bench names to launch only those, e.g.
 #   bash scripts/launch_earlystop_b4.sh officeqa livemath
 #
-# Session names: <YYMMDD>-skillopt-<bench>-dpskv41flash-train-{earlystop-b4,fullval}
+# Session names: <YYMMDD-HHMM>-skillopt-<bench>-dpskv41flash-train-{earlystop-b4,fullval}
 # Outputs:       outputs/skillopt_<bench>_deepseek-v4-1-flash-huoshan-huoshan_<TS>_{earlystop_b4,fullval}
 set -euo pipefail
 : "${OPENAI_COMPATIBLE_API_KEY:?export OPENAI_COMPATIBLE_API_KEY first}"
@@ -35,7 +35,7 @@ done
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 TS=$(date +%Y%m%d_%H%M%S)
-D=$(date +%y%m%d)
+D=$(date +%y%m%d-%H%M)  # include time so a same-day relaunch does not collide with old sessions
 M="$OPENAI_COMPATIBLE_MODEL"
 TAG="${RUN_TAG:-deepseek-v4-1-flash-huoshan-huoshan}"  # same output-dir naming as the 261112 SearchQA pair
 COMMON="env.workers=24 env.max_completion_tokens=$TARGET_OPENAI_COMPATIBLE_MAX_TOKENS model.backend=openai_compatible model.optimizer_backend=openai_compatible model.target_backend=openai_compatible model.optimizer=$M model.target=$M"
