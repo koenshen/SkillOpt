@@ -144,3 +144,74 @@ def test_combined_token_summary_counts_each_backend_once(
         "completion_tokens": 15,
         "total_tokens": 25,
     }
+
+
+class _FailingThenOk(_CompletionRecorder):
+    """Raises the given errors in order, then succeeds."""
+
+    def __init__(self, errors: list[Exception]) -> None:
+        super().__init__()
+        self.errors = list(errors)
+
+    def create(self, **kwargs: Any) -> Any:
+        if self.errors:
+            self.calls.append(kwargs)
+            raise self.errors.pop(0)
+        return super().create(**kwargs)
+
+
+_RPM_429 = RuntimeError(
+    "Error code: 429 - {'error': {'message': 'RPM (Requests Per Minute) limit of the "
+    "model deepseek-v4-1-flash is exceeded. Please try again later', 'type': 'TooManyRequests'}}"
+)
+_QUOTA_403 = RuntimeError(
+    "Error code: 403 - {'error': {'message': 'token quota is not enough, token remain "
+    "quota: 0.05', 'code': 'pre_consume_token_quota_failed'}}"
+)
+
+
+def _patch_client(monkeypatch: pytest.MonkeyPatch, recorder: _CompletionRecorder) -> list[float]:
+    sleeps: list[float] = []
+    monkeypatch.setattr(backend, "_get_client", lambda role: _Client(recorder))
+    monkeypatch.setattr(backend.time, "sleep", sleeps.append)
+    return sleeps
+
+
+def test_rate_limit_errors_do_not_use_up_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _FailingThenOk([_RPM_429] * 8)
+    sleeps = _patch_client(monkeypatch, recorder)
+
+    text, _ = backend.chat_target("system", "user", retries=5)
+
+    assert text == "ok"
+    assert len(sleeps) == 8
+    assert all(s >= 7.5 for s in sleeps)  # rate-limit back-off, not the 1-2-4s one
+
+
+def test_rate_limit_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_COMPATIBLE_RATE_LIMIT_MAX_WAIT_SECONDS", "40")
+    recorder = _FailingThenOk([_RPM_429] * 100)
+    sleeps = _patch_client(monkeypatch, recorder)
+
+    with pytest.raises(RuntimeError, match="failed after 2 retries"):
+        backend.chat_target("system", "user", retries=2)
+
+    assert sum(sleeps) <= 40 + 1 + 2  # rate-limit budget plus the two normal back-offs
+
+
+def test_quota_error_is_not_treated_as_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _FailingThenOk([_QUOTA_403] * 10)
+    sleeps = _patch_client(monkeypatch, recorder)
+
+    with pytest.raises(RuntimeError, match="failed after 3 retries"):
+        backend.chat_target("system", "user", retries=3)
+
+    assert sleeps == [1, 2, 4]
+    assert len(recorder.calls) == 3
+
+
+def test_is_rate_limited_uses_status_code() -> None:
+    err = RuntimeError("busy")
+    err.status_code = 429  # type: ignore[attr-defined]
+    assert backend._is_rate_limited(err)
+    assert not backend._is_rate_limited(_QUOTA_403)

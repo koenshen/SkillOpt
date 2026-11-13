@@ -25,6 +25,7 @@ it can be selected as the optimizer and/or target backend and routed through
 from __future__ import annotations
 
 import os
+import random
 import threading
 import time
 from dataclasses import dataclass
@@ -163,6 +164,34 @@ def count_tokens(text: str, model: str | None = None) -> int:
         return max(1, (len(text) + 3) // 4)
 
 
+_RATE_LIMIT_MARKERS = (
+    "rate limit", "ratelimit", "too many requests", "toomanyrequests",
+    "requests per minute", "tokens per minute",
+)
+
+
+def _is_rate_limited(err: Exception) -> bool:
+    """True for HTTP 429 / provider rate-limit errors (not quota or auth errors)."""
+    if getattr(err, "status_code", None) == 429:
+        return True
+    text = str(err).lower()
+    return "error code: 429" in text or any(m in text for m in _RATE_LIMIT_MARKERS)
+
+
+def _rate_limit_max_wait() -> float:
+    """Total seconds one call may spend waiting out rate limits (default 30 min)."""
+    raw = os.environ.get("OPENAI_COMPATIBLE_RATE_LIMIT_MAX_WAIT_SECONDS", "").strip()
+    try:
+        return float(raw) if raw else 1800.0
+    except ValueError:
+        return 1800.0
+
+
+def _rate_limit_sleep(n: int) -> float:
+    """Back-off before the n-th consecutive rate-limit retry: 15s doubling, capped at 120s, jittered."""
+    return min(15.0 * (2 ** n), 120.0) * random.uniform(0.5, 1.0)
+
+
 def _chat_messages_impl(
     messages: list[dict[str, Any]],
     max_completion_tokens: int,
@@ -194,8 +223,16 @@ def _chat_messages_impl(
     if timeout is not None:
         kwargs["timeout"] = timeout
 
+    # Rate-limit (429) errors are waited out separately: they do not use up the
+    # ``retries`` budget, which is meant for real failures.  A per-minute limit
+    # needs longer than the ~30s the normal back-off gives, otherwise the item
+    # is scored as a failure only because the provider was busy.
     last_err: Exception | None = None
-    for attempt in range(retries):
+    attempt = 0
+    rate_limit_hits = 0
+    rate_limit_waited = 0.0
+    rate_limit_budget = _rate_limit_max_wait()
+    while attempt < retries:
         try:
             resp = client.chat.completions.create(**kwargs)
             choices = getattr(resp, "choices", None) or []
@@ -216,7 +253,14 @@ def _chat_messages_impl(
             return text, usage_info
         except Exception as e:  # noqa: BLE001
             last_err = e
+            if _is_rate_limited(e) and rate_limit_waited < rate_limit_budget:
+                wait = min(_rate_limit_sleep(rate_limit_hits), rate_limit_budget - rate_limit_waited)
+                rate_limit_hits += 1
+                rate_limit_waited += wait
+                time.sleep(wait)
+                continue
             time.sleep(min(2 ** attempt, 30))
+            attempt += 1
     raise RuntimeError(
         f"OpenAI-compatible chat call failed after {retries} retries: {last_err}"
     )
