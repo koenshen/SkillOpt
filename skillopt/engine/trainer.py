@@ -373,6 +373,26 @@ def _save_skill(out_root: str, step: int, content: str) -> None:
         f.write(content)
 
 
+def _write_results_jsonl(results: list, out_dir: str) -> None:
+    """Write per-item rollout results to ``out_dir/results.jsonl``.
+
+    Adapters write this file themselves when they run a rollout. This helper
+    is for paths that reuse an existing rollout (final == best) and would
+    otherwise leave the directory with only ``summary.json``, which breaks
+    paired per-item analysis downstream.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "results.jsonl"), "w") as f:
+        for r in results:
+            if isinstance(r, dict):
+                d = r
+            elif hasattr(r, "to_dict"):
+                d = r.to_dict()
+            else:
+                d = getattr(r, "__dict__", {})
+            f.write(json.dumps(d, ensure_ascii=False) + "\n")
+
+
 def _load_skill(out_root: str, step: int) -> str:
     path = os.path.join(out_root, "skills", f"skill_v{step:04d}.md")
     with open(path) as f:
@@ -2294,9 +2314,30 @@ class ReflACTTrainer:
             try:
                 if skill_hash(current_skill) == skill_hash(best_skill):
                     final_selection_hard, final_selection_soft = best_score, None
+                    # No rollout was run here, so there is no real per-item file
+                    # for the final skill. Write a small marker instead of an
+                    # empty directory, so downstream tooling can tell a reused
+                    # final val apart from a measured one.
+                    fval_dir = os.path.join(out_root, "final_selection_eval")
+                    os.makedirs(fval_dir, exist_ok=True)
+                    with open(
+                        os.path.join(fval_dir, "selection.json"), "w"
+                    ) as f:
+                        json.dump(
+                            {
+                                "reused_from": "best",
+                                "reason": "final skill is identical to best skill",
+                                "best_step": best_step,
+                                "best_origin": best_origin,
+                                "hard": best_score,
+                                "soft": None,
+                            },
+                            f, indent=2, ensure_ascii=False,
+                        )
                     print(
                         "\n  [final skill == best skill] "
-                        f"final_selection_hard={best_score:.4f} (reused)"
+                        f"final_selection_hard={best_score:.4f} "
+                        f"(reused; marker written to {fval_dir}/selection.json)"
                     )
                 else:
                     fval_env, fval_n = _build_eval_env(
@@ -2427,6 +2468,12 @@ class ReflACTTrainer:
                     final_test_hard, final_test_soft = test_hard, test_soft
                     final_test_dir = os.path.join(out_root, "test_eval_final")
                     os.makedirs(final_test_dir, exist_ok=True)
+                    # Write the per-item file too. Re-running the same skill on
+                    # the same items would only add sampling noise, so the
+                    # items are identical to test_eval by construction; copy
+                    # them so downstream paired analysis sees the same schema
+                    # in every test_eval* directory.
+                    _write_results_jsonl(test_results, final_test_dir)
                     with open(os.path.join(final_test_dir, "summary.json"), "w") as f:
                         json.dump(
                             {
@@ -2440,7 +2487,8 @@ class ReflACTTrainer:
                         )
                     print(
                         "\n  [final skill == best skill] "
-                        f"final_test_hard={final_test_hard:.4f} (reused)"
+                        f"final_test_hard={final_test_hard:.4f} "
+                        f"(reused, {len(test_results)} per-item rows written)"
                     )
                 else:
                     print(f"\n{'='*60}")
