@@ -2,11 +2,11 @@
   "benchmark": "BIRD",
   "manifest_type": "id_split",
   "source_files": {
-    "dev": "dev_prompt.generated.jsonl",
-    "mini_dev": "mini_dev_prompt.generated.jsonl"
+    "dev": "dev_meta.jsonl",
+    "mini_dev": "mini_meta.jsonl"
   },
   "source_id_field": "question_id",
-  "rule": "test = all of mini-dev; val = stratified sample by (db_id, difficulty) from dev minus mini-dev; train = the rest of dev minus mini-dev",
+  "rule": "test = all of mini-dev; val = stratified sample by (db_id, difficulty) from dev minus mini-dev, matched to the test distribution; train = the rest of dev minus mini-dev",
   "seed": 42,
   "counts": {
     "train": 834,
@@ -15,14 +15,14 @@
   },
   "difficulty": {
     "train": {
-      "challenging": 35,
-      "moderate": 173,
-      "simple": 626
+      "challenging": 15,
+      "moderate": 111,
+      "simple": 708
     },
     "val": {
-      "challenging": 8,
-      "moderate": 41,
-      "simple": 151
+      "challenging": 28,
+      "moderate": 103,
+      "simple": 69
     },
     "test": {
       "challenging": 102,
@@ -33,29 +33,29 @@
   "db_id": {
     "train": {
       "california_schools": 47,
-      "card_games": 112,
-      "codebase_community": 111,
-      "debit_card_specializing": 27,
-      "european_football_2": 63,
-      "financial": 60,
-      "formula_1": 88,
+      "card_games": 116,
+      "codebase_community": 121,
+      "debit_card_specializing": 23,
+      "european_football_2": 58,
+      "financial": 62,
+      "formula_1": 83,
       "student_club": 88,
-      "superhero": 62,
-      "thrombosis_prediction": 92,
-      "toxicology": 84
+      "superhero": 60,
+      "thrombosis_prediction": 90,
+      "toxicology": 86
     },
     "val": {
       "california_schools": 12,
-      "card_games": 27,
-      "codebase_community": 26,
-      "debit_card_specializing": 7,
-      "european_football_2": 15,
-      "financial": 14,
-      "formula_1": 20,
+      "card_games": 23,
+      "codebase_community": 16,
+      "debit_card_specializing": 11,
+      "european_football_2": 20,
+      "financial": 12,
+      "formula_1": 25,
       "student_club": 22,
-      "superhero": 15,
-      "thrombosis_prediction": 21,
-      "toxicology": 21
+      "superhero": 17,
+      "thrombosis_prediction": 23,
+      "toxicology": 19
     },
     "test": {
       "california_schools": 30,

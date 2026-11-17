@@ -170,3 +170,24 @@ def test_materialize_uses_mini_rows_for_test(tmp_path: Path) -> None:
     test_items = json.loads((tmp_path / "out" / "test" / "items.json").read_text())
     assert {it["SQL"] for it in test_items} == {"SELECT mini"}
     assert all(it["task_type"] == it["difficulty"] for it in test_items)
+
+
+def test_val_matches_test_distribution_by_default() -> None:
+    dev = _rows(300)
+    mini = [r for r in dev if r["question_id"] < 60]
+    split = split_mod.build_split(dev, mini, val_size=30, seed=1)
+    val = split["val"]
+    test_diff = {}
+    for r in split["test"]:
+        test_diff[r["difficulty"]] = test_diff.get(r["difficulty"], 0) + 1
+    val_diff = {}
+    for r in val:
+        val_diff[r["difficulty"]] = val_diff.get(r["difficulty"], 0) + 1
+    assert set(val_diff) == set(test_diff), (val_diff, test_diff)
+
+
+def test_val_pool_distribution_when_opted_out() -> None:
+    dev = _rows(300)
+    mini = [r for r in dev if r["question_id"] < 60]
+    a = split_mod.build_split(dev, mini, val_size=30, seed=1, match_test_distribution=False)
+    assert len(a["val"]) == 30

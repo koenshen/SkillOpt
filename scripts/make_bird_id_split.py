@@ -36,6 +36,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "data" / "bird_id_split")
     parser.add_argument("--val-size", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--val-distribution",
+        choices=("test", "pool"),
+        default="test",
+        help="'test' (default): make val match mini-dev's (db_id, difficulty) mix; 'pool': use the pool's own mix",
+    )
     return parser.parse_args()
 
 
@@ -56,38 +62,82 @@ def load_rows(path: Path) -> list[dict]:
     return rows
 
 
-def stratified_sample(rows: list[dict], size: int, seed: int) -> list[dict]:
-    """Proportional allocation per (db_id, difficulty), largest remainder."""
+def stratified_sample(
+    rows: list[dict],
+    size: int,
+    seed: int,
+    target: list[dict] | None = None,
+) -> list[dict]:
+    """Proportional allocation per (db_id, difficulty), largest remainder.
+
+    ``target`` is the distribution to imitate (the test split).  Without it the
+    pool's own distribution is used.  A cell whose pool is smaller than its
+    quota contributes only what exists; the shortfall is redistributed over
+    cells that still have spare items, so the returned sample may deviate from
+    ``target`` when the pool cannot match it.
+    """
     if size > len(rows):
         raise ValueError(f"val size {size} > pool size {len(rows)}")
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in rows:
         groups[(row["db_id"], row["difficulty"])].append(row)
     keys = sorted(groups)
-    quotas = {k: size * len(groups[k]) / len(rows) for k in keys}
-    alloc = {k: int(quotas[k]) for k in keys}
+    if target is None:
+        weights = {k: len(groups[k]) for k in keys}
+        total_weight = len(rows)
+    else:
+        counts = Counter((r["db_id"], r["difficulty"]) for r in target)
+        weights = {k: counts.get(k, 0) for k in keys}
+        total_weight = len(target)
+        if sum(weights.values()) == 0:
+            raise ValueError("target distribution shares no (db_id, difficulty) with the pool")
+    quotas = {k: size * weights[k] / total_weight for k in keys}
+    alloc = {k: min(int(quotas[k]), len(groups[k])) for k in keys}
+    # Fill the remainder by the largest unmet quota first; a cell whose pool is
+    # full drops out and its share effectively goes to the others.
     leftover = size - sum(alloc.values())
-    for k in sorted(keys, key=lambda k: (-(quotas[k] - alloc[k]), k))[:leftover]:
+    while leftover > 0:
+        candidates = [k for k in keys if alloc[k] < len(groups[k])]
+        if not candidates:
+            raise ValueError(
+                f"pool cannot supply {size} items under the requested distribution "
+                f"({leftover} short); reduce val size or relax the target"
+            )
+        k = max(candidates, key=lambda k: (quotas[k] - alloc[k], len(groups[k]) - alloc[k], k))
         alloc[k] += 1
+        leftover -= 1
     rng = random.Random(seed)
     picked = []
     for k in keys:
         members = sorted(groups[k], key=lambda r: int(r["question_id"]))
-        picked.extend(rng.sample(members, alloc[k]))
+        if alloc[k]:
+            picked.extend(rng.sample(members, alloc[k]))
     return sorted(picked, key=lambda r: int(r["question_id"]))
 
 
-def build_split(dev: list[dict], mini: list[dict], val_size: int, seed: int) -> dict[str, list[dict]]:
+def build_split(
+    dev: list[dict],
+    mini: list[dict],
+    val_size: int,
+    seed: int,
+    match_test_distribution: bool = True,
+) -> dict[str, list[dict]]:
+    """test = mini-dev; val = ``val_size`` from dev minus mini-dev; train = the rest.
+
+    With ``match_test_distribution`` (default) the val sample follows the
+    (db_id, difficulty) distribution of mini-dev, so the gate scores candidates
+    on the same simple/moderate/challenging mix it is finally tested on.
+    """
     dev_ids = {str(r["question_id"]) for r in dev}
     mini_ids = {str(r["question_id"]) for r in mini}
     missing = sorted(mini_ids - dev_ids, key=int)
     if missing:
         raise ValueError(f"mini-dev has {len(missing)} question_id values not in dev, e.g. {missing[:5]}")
     pool = [r for r in dev if str(r["question_id"]) not in mini_ids]
-    val = stratified_sample(pool, val_size, seed)
+    test = sorted(mini, key=lambda r: int(r["question_id"]))
+    val = stratified_sample(pool, val_size, seed, target=test if match_test_distribution else None)
     val_ids = {str(r["question_id"]) for r in val}
     train = [r for r in pool if str(r["question_id"]) not in val_ids]
-    test = sorted(mini, key=lambda r: int(r["question_id"]))
     return {"train": train, "val": val, "test": test}
 
 
@@ -104,7 +154,9 @@ def write_split(split: dict[str, list[dict]], output_dir: Path, args: argparse.N
         "source_id_field": "question_id",
         "rule": (
             "test = all of mini-dev; val = stratified sample by (db_id, difficulty) "
-            "from dev minus mini-dev; train = the rest of dev minus mini-dev"
+            f"from dev minus mini-dev, matched to the "
+            f"{getattr(args, 'val_distribution', 'test')} distribution; "
+            "train = the rest of dev minus mini-dev"
         ),
         "seed": args.seed,
         "counts": {name: len(split[name]) for name in SPLITS},
@@ -124,7 +176,11 @@ def write_split(split: dict[str, list[dict]], output_dir: Path, args: argparse.N
 
 def main() -> None:
     args = parse_args()
-    split = build_split(load_rows(args.dev_jsonl), load_rows(args.mini_dev_jsonl), args.val_size, args.seed)
+    split = build_split(
+        load_rows(args.dev_jsonl), load_rows(args.mini_dev_jsonl),
+        args.val_size, args.seed,
+        match_test_distribution=args.val_distribution == "test",
+    )
     write_split(split, args.output_dir, args)
     print({name: len(split[name]) for name in SPLITS}, "->", args.output_dir)
 
