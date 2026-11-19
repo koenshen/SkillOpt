@@ -111,6 +111,12 @@ evaluation:
   eval_test: true
   selection_early_stop: false     # exact lineage-ordered early stop of selection eval (hard gate only)
   selection_early_stop_batch: 0   # items per batch; 0 = env workers
+  train_early_stop: false         # end training once recent candidates show no progress (not exact; see skillopt/evaluation/train_early_stop.py)
+  train_early_stop_rho: 0.75      # earliest stop point as a fraction of total steps
+  train_early_stop_k: 3           # consecutive steps without progress above delta
+  train_early_stop_delta: 0.5     # minimum standardised paired gain that counts as progress
+  train_early_stop_lambda: 0.6    # EMA weight for the reported smoothed progress
+  train_early_stop_min_steps: 10  # never stop before this step
 
 env:
   name: ""

@@ -26,6 +26,16 @@ from skillopt.datasets.base import BatchSpec
 from skillopt.envs.base import EnvAdapter
 from skillopt.evaluation.early_stop import evaluate_with_early_stop, update_history
 from skillopt.evaluation.gate import GateResult, evaluate_gate, select_gate_score
+from skillopt.evaluation.train_early_stop import (
+    TrainEarlyStopConfig,
+    TrainEarlyStopState,
+    item_scores as train_es_item_scores,
+    load_item_scores as train_es_load_item_scores,
+    observe as train_es_observe,
+    paired_progress as train_es_paired_progress,
+    should_stop as train_es_should_stop,
+    threshold_step as train_es_threshold_step,
+)
 from skillopt.gradient.aggregate import merge_patches
 from skillopt.optimizer.meta_skill import run_meta_skill
 from skillopt.optimizer.clip import rank_and_select
@@ -1042,22 +1052,30 @@ class ReflACTTrainer:
         if use_skill_aware:
             current_skill = inject_empty_appendix_field(current_skill)
 
+        # Step at which training-level early stop ended the run (None = not
+        # stopped). Persisted so a resumed run does not train past it.
+        train_es_stopped_at = (
+            (runtime_state or {}).get("train_early_stopped_at")
+            if cfg.get("train_early_stop", False)
+            else None
+        )
+
         def _persist_runtime_state(last_completed_step: int) -> None:
-            _save_runtime_state(
-                out_root,
-                {
-                    "last_completed_step": last_completed_step,
-                    "current_skill_path": os.path.join(
-                        out_root, "skills", f"skill_v{last_completed_step:04d}.md",
-                    ),
-                    "current_score": current_score,
-                    "current_origin": current_origin,
-                    "best_skill_path": os.path.join(out_root, "best_skill.md"),
-                    "best_score": best_score,
-                    "best_step": best_step,
-                    "best_origin": best_origin,
-                },
-            )
+            state = {
+                "last_completed_step": last_completed_step,
+                "current_skill_path": os.path.join(
+                    out_root, "skills", f"skill_v{last_completed_step:04d}.md",
+                ),
+                "current_score": current_score,
+                "current_origin": current_origin,
+                "best_skill_path": os.path.join(out_root, "best_skill.md"),
+                "best_score": best_score,
+                "best_step": best_step,
+                "best_origin": best_origin,
+            }
+            if train_es_stopped_at is not None:
+                state["train_early_stopped_at"] = train_es_stopped_at
+            _save_runtime_state(out_root, state)
 
         # ── Selection cache ──────────────────────────────────────────────
         sel_cache: dict[str, tuple[float, float]] = {}
@@ -1182,6 +1200,98 @@ class ReflACTTrainer:
                 f"history from {len(hist_files)} result files, {len(sel_history)} items"
             )
 
+        # ── Training early stop (off by default) ─────────────────────────
+        # Not exact: ends the whole run once recent candidates show no paired
+        # progress over the current skill (see evaluation/train_early_stop.py).
+        # Everything below is a no-op unless evaluation.train_early_stop=true.
+        train_es_on = bool(cfg.get("train_early_stop", False))
+        train_es_cfg = TrainEarlyStopConfig.from_cfg(cfg) if train_es_on else None
+        train_es_state = TrainEarlyStopState()
+        # Per-item hard scores of the current skill on the selection set; the
+        # reference each candidate is paired against.
+        train_es_ref: dict[str, float] = {}
+        if train_es_on:
+            for rec in history:
+                if isinstance(rec.get("train_early_stop"), dict):
+                    train_es_state = TrainEarlyStopState.from_dict(
+                        rec["train_early_stop"].get("state")
+                    )
+            train_es_ref = train_es_load_item_scores(
+                os.path.join(out_root, "selection_eval_baseline", "results.jsonl")
+            )
+            for rec in history:
+                if rec.get("action") in {"accept", "accept_new_best", "force_accept"}:
+                    scores = train_es_load_item_scores(os.path.join(
+                        out_root, "steps", f"step_{int(rec['step']):04d}",
+                        "selection_eval", "results.jsonl",
+                    ))
+                    if scores:
+                        train_es_ref = scores
+            if not train_es_ref:
+                print(
+                    "  [train early stop] disabled: no per-item selection "
+                    "results for the current skill"
+                )
+                train_es_on = False
+            else:
+                print(
+                    f"  [train early stop] on: rho={train_es_cfg.rho} "
+                    f"k={train_es_cfg.k} delta={train_es_cfg.delta} "
+                    f"lambda={train_es_cfg.lam} min_steps={train_es_cfg.min_steps} "
+                    f"-> may stop from step "
+                    f"{train_es_threshold_step(total_steps, train_es_cfg)}/{total_steps}"
+                    + (f"  [already stopped at step {train_es_stopped_at}]"
+                       if train_es_stopped_at is not None else "")
+                )
+
+        def _train_es_record(step_rec: dict, cand_results: list | None) -> None:
+            """Fold this step's paired progress into the state; log it."""
+            nonlocal train_es_on
+            if not train_es_on:
+                return
+            info: dict = {"partial": False}
+            if cand_results is None:
+                # No new candidate evaluated (skip, cache hit): no progress.
+                info.update(z=0.0, d=0.0, u=0.0, n=0, reason="no_eval")
+            else:
+                cand = train_es_item_scores(cand_results)
+                prog = train_es_paired_progress(cand, train_es_ref)
+                if prog["n"] == 0:
+                    print(
+                        "    [train early stop] disabled: selection results "
+                        "carry no item ids shared with the current skill"
+                    )
+                    train_es_on = False
+                    return
+                info.update(prog)
+                info["partial"] = prog["n"] < len(train_es_ref)
+            train_es_observe(train_es_state, info["z"], train_es_cfg)
+            info["state"] = train_es_state.to_dict()
+            step_rec["train_early_stop"] = info
+            print(
+                f"    [train early stop] z={info['z']:+.2f} (d={info['d']:+g} "
+                f"u={info['u']:g} n={info['n']}{' partial' if info['partial'] else ''}) "
+                f"cusum={train_es_state.cusum:.2f} ema={train_es_state.ema:+.2f} "
+                f"flat={train_es_state.flat_steps}/{train_es_cfg.k}"
+            )
+
+        def _train_es_check_stop(step: int) -> bool:
+            """After a step is saved: decide whether to end training here."""
+            nonlocal train_es_stopped_at
+            if not train_es_on or not train_es_should_stop(
+                train_es_state, step, total_steps, train_es_cfg,
+            ):
+                return False
+            train_es_stopped_at = step
+            _persist_runtime_state(step)
+            print(
+                f"\n  [train early stop] stop at step {step}/{total_steps}: "
+                f"{train_es_state.flat_steps} consecutive steps without progress "
+                f"(cusum={train_es_state.cusum:.2f}, ema={train_es_state.ema:+.2f}); "
+                f"best skill from step {best_step} (score={best_score:.4f})"
+            )
+            return True
+
         # ── Training loop ────────────────────────────────────────────────
         t_loop_start = time.time()
 
@@ -1189,7 +1299,15 @@ class ReflACTTrainer:
             print(f"\n  [skip] all {total_steps} steps complete — jumping to evaluation")
 
         global_step = 0
+        if train_es_stopped_at is not None:
+            print(
+                f"\n  [train early stop] run already stopped at step "
+                f"{train_es_stopped_at} — jumping to evaluation"
+            )
+            global_step = int(train_es_stopped_at)
         for epoch in range(1, num_epochs + 1):
+            if train_es_stopped_at is not None:
+                break
             if dataloader is not None:
                 epoch_batches = dataloader.plan_train_epoch(
                     epoch=epoch,
@@ -1374,6 +1492,7 @@ class ReflACTTrainer:
                     step_rec["best_step"] = best_step
                     step_rec["skill_len"] = len(current_skill)
                     step_rec["wall_time_s"] = round(time.time() - step_t0, 1)
+                    _train_es_record(step_rec, None)
                     history.append(step_rec)
                     _save_history(out_root, history)
                     _save_skill(out_root, global_step, current_skill)
@@ -1381,6 +1500,8 @@ class ReflACTTrainer:
                     with open(os.path.join(step_dir, "step_record.json"), "w") as f:
                         json.dump(step_rec, f, indent=2, ensure_ascii=False)
                     print("    [skip] no usable patches — skill unchanged")
+                    if _train_es_check_stop(global_step):
+                        break
                     continue
 
                 # ③ AGGREGATE ──────────────────────────────────────────────
@@ -1568,6 +1689,7 @@ class ReflACTTrainer:
                     step_rec["best_step"] = best_step
                     step_rec["skill_len"] = len(current_skill)
                     step_rec["wall_time_s"] = round(time.time() - step_t0, 1)
+                    _train_es_record(step_rec, None)
                     history.append(step_rec)
                     _save_history(out_root, history)
                     _save_skill(out_root, global_step, current_skill)
@@ -1575,6 +1697,8 @@ class ReflACTTrainer:
                     with open(os.path.join(step_dir, "step_record.json"), "w") as f:
                         json.dump(step_rec, f, indent=2, ensure_ascii=False)
                     print("    [skip] no usable rewrite generated — skill unchanged")
+                    if _train_es_check_stop(global_step):
+                        break
                     continue
                 print(
                     f"    [5/6 UPDATE] "
@@ -1585,6 +1709,7 @@ class ReflACTTrainer:
                 t_phase = time.time()
                 tokens_before_eval = get_token_summary()
                 sel_es_outcome = None
+                sel_results = None  # stays None on a cache hit
                 if cand_hash in sel_cache:
                     cand_hard, cand_soft = sel_cache[cand_hash]
                     print(
@@ -1701,6 +1826,16 @@ class ReflACTTrainer:
                 step_rec["gate_metric"] = gate_metric
                 step_rec["candidate_gate_score"] = cand_gate_score
                 step_rec["action"] = gate.action
+                if train_es_on:
+                    # Pair against the skill current BEFORE this gate decision.
+                    _train_es_record(step_rec, sel_results)
+                    if (
+                        gate.action in {"accept", "accept_new_best", "force_accept"}
+                        and sel_results is not None
+                    ):
+                        accepted = train_es_item_scores(sel_results)
+                        if accepted:
+                            train_es_ref = accepted
                 prev_current = current_score
                 prev_best = best_score
                 current_skill = gate.current_skill
@@ -1844,6 +1979,17 @@ class ReflACTTrainer:
                     f"select={timing.get('select_s',0)}s "
                     f"evaluate={timing.get('evaluate_s',0)}s"
                 )
+                if _train_es_check_stop(global_step):
+                    break
+
+            if train_es_stopped_at is not None:
+                # Stopped inside (or at the end of) this epoch: skip the
+                # epoch-end slow update / meta skill, which would change the
+                # current skill without any selection evaluation.
+                print(
+                    f"  [train early stop] skipping end-of-epoch updates for epoch {epoch}"
+                )
+                break
 
             epoch_last_step_skill = current_skill
             epoch_comparison_pairs: list[dict] | None = None
@@ -2603,6 +2749,26 @@ class ReflACTTrainer:
             "total_wall_time_s": round(total_wall, 1),
             "token_summary": token_summary,
         }
+        if cfg.get("train_early_stop", False):
+            summary["train_early_stop"] = {
+                "enabled": train_es_on,
+                "stopped": train_es_stopped_at is not None,
+                "stop_step": train_es_stopped_at,
+                "planned_steps": total_steps,
+                "threshold_step": (
+                    train_es_threshold_step(total_steps, train_es_cfg)
+                    if train_es_cfg is not None else None
+                ),
+                "params": (
+                    {
+                        "rho": train_es_cfg.rho, "k": train_es_cfg.k,
+                        "delta": train_es_cfg.delta, "lambda": train_es_cfg.lam,
+                        "min_steps": train_es_cfg.min_steps,
+                    }
+                    if train_es_cfg is not None else None
+                ),
+                "final_state": train_es_state.to_dict(),
+            }
         with open(os.path.join(out_root, "summary.json"), "w") as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)
 
