@@ -419,7 +419,8 @@ as before. Implementation: `skillopt/evaluation/early_stop.py`,
 
 ### Shared recipe
 
-All 16 planned runs below use the same recipe; only the three items marked **[var]** change.
+All 16 runs below use the same recipe; only the three items marked **[var]** change.
+All 16 finished by 2026-11-21 01:49; the table holds the measured values.
 
 ```bash
 # on ssh cpu, in /mnt/sdd3/xuancheng/code/github/SkillOpt
@@ -519,15 +520,46 @@ skill scored on the held-out test split; `test final` is the last skill.
 | TriviaQA | ES (dev early stop, b=4) | 1017 | 160/160 | - | 97 | 99.14M (54.0%) | 88.08M (56.6%) | 0.8850 | 0.8970 | 8.0h |
 | TriviaQA | FULL (baseline) | 1017 | 160/160 | - | 81 | 215.61M | 202.87M | 0.8910 | 0.8920 | 7.4h |
 | TriviaQA | AGG rho=0.75 | 1017L | 120/160 | 120 | 62 | 90.52M (58.0%) | 78.36M (61.4%) | 0.8930 | 0.8960 | 5.4h |
-| TriviaQA | AGG rho=0.50 | 1017L | *(running at 2026-11-20 11:14)* | | | | | | | |
+| TriviaQA | AGG rho=0.50 | 1017L | 80/160 | 80 | 12 | 51.26M (76.2%) | 43.21M (78.7%) | 0.8830 | 0.8770 | 4.0h |
 | HotpotQA | ES (dev early stop, b=4) | 1017 | 160/160 | - | 79 | 160.50M (28.6%) | 145.94M (31.6%) | 0.6780 | 0.6830 | 21.4h |
 | HotpotQA | FULL (baseline) | 1017 | 160/160 | - | 5 | 224.63M | 213.35M | 0.6760 | 0.6780 | 14.6h |
-| HotpotQA | AGG rho=0.75 | 1017L | *(running at 2026-11-20 11:14: 86/160)* | | | | | | | |
-| HotpotQA | AGG rho=0.50 | 1017L | *(running at 2026-11-20 11:14)* | | | | | | | |
+| HotpotQA | AGG rho=0.75 | 1017L | 120/160 | 120 | 110 | 149.01M (33.7%) | 139.24M (34.7%) | 0.6860 | 0.6860 | 15.7h |
+| HotpotQA | AGG rho=0.50 | 1017L | 80/160 | 80 | 70 | 72.27M (67.8%) | 65.86M (69.1%) | 0.6730 | 0.6730 | 11.5h |
 | BIRD | ES (dev early stop, b=4) | 1017 | 84/84 | - | 63 | 136.43M (39.4%) | 120.89M (42.2%) | 0.7180 | 0.7380 | 23.6h |
 | BIRD | FULL (baseline) | 1017 | 84/84 | - | 45 | 225.14M | 209.21M | 0.7100 | 0.7000 | 11.4h |
-| BIRD | AGG rho=0.75 | 1017L | *(running at 2026-11-20 11:14: 38/84)* | | | | | | | |
-| BIRD | AGG rho=0.50 | 1017L | *(running at 2026-11-20 11:14)* | | | | | | | |
+| BIRD | AGG rho=0.75 | 1017L | 63/84 | 63 | 37 | 93.73M (58.4%) | 80.99M (61.3%) | 0.7140 | 0.7140 | 16.8h |
+| BIRD | AGG rho=0.50 | 1017L | 42/84 | 42 | 38 | 52.38M (76.7%) | 46.47M (77.8%) | 0.6820 | 0.6820 | 12.7h |
+
+### rho comparison (aggregated from the table above)
+
+All eight AGG runs stopped exactly at `ceil(rho * total_steps)` (30/120/80/63
+for rho=0.75 and 20/80/42 for rho=0.50): in every case the data rule had already
+fired well before the threshold, so rho alone decided the stop step.
+
+Savings vs the matching FULL run, and test accuracy of the best-on-dev skill:
+
+| bench | rho=0.75 total save | rho=0.75 train+dev save | rho=0.75 test best | rho=0.50 total save | rho=0.50 train+dev save | rho=0.50 test best |
+|---|---|---|---|---|---|---|
+| SearchQA | 55.9% | 66.7% | 0.8464 (FULL -0.21 pt) | 72.4% | 76.9% | 0.8429 (FULL -0.57 pt) |
+| TriviaQA | 58.0% | 61.4% | 0.8930 (FULL +0.20 pt) | 76.2% | 78.7% | 0.8830 (FULL -0.80 pt) |
+| HotpotQA | 33.7% | 34.7% | 0.6860 (FULL +1.00 pt) | 67.8% | 69.1% | 0.6730 (FULL -0.30 pt) |
+| BIRD | 58.4% | 61.3% | 0.7140 (FULL +0.40 pt) | 76.7% | 77.8% | 0.6820 (FULL -2.80 pt) |
+
+Paired per-item comparison of the rho=0.50 best skill against the rho=0.75 best
+skill (discordant items only, from `test_eval/results.jsonl`):
+
+| bench | items | rho=0.50 better | rho=0.75 better | net |
+|---|---|---|---|---|
+| SearchQA | 1,400 | 27 | 32 | -5 (-0.36 pt) |
+| TriviaQA | 1,000 | 9 | 19 | -10 (-1.00 pt) |
+| HotpotQA | 1,000 | 25 | 38 | -13 (-1.30 pt) |
+| BIRD | 500 | 14 | 30 | -16 (-3.20 pt) |
+
+Reading: rho=0.75 lands within +/-1 pt of FULL on all four benchmarks (one below,
+three above). rho=0.50 buys another 30-52% of the remaining tokens and is within
+noise on SearchQA (-0.57 pt) but loses 0.8-3.2 pt on the other three. All of these
+are single runs; the starting-point noise measured on one test split was
+0.29-1.00 pt, so the smaller gaps are not resolved.
 
 Notes on the numbers:
 
@@ -542,10 +574,14 @@ Notes on the numbers:
   the most expensive ones.
 - The ES arm and the AGG arms are separate training runs with independent
   sampling, so their test scores differ by more than the early-stop flags alone
-  would explain. Sampling noise on one test split was measured separately: three
-  SearchQA runs (2026-11-11/12, `deepseek-v4.1-flash-0910`) that all started
-  from the identical initial skill scored 0.7671 / 0.7600 / 0.7571 on the same
-  1,400 items, i.e. 0.29-1.00 pt of purely sampling-driven spread.
+  would explain. Sampling noise was measured two ways: (a) three SearchQA runs
+  (2026-11-11/12, `deepseek-v4.1-flash-0910`) from the identical initial skill
+  scored 0.7671 / 0.7600 / 0.7571 on the same 1,400 items (0.29-1.00 pt of
+  purely sampling-driven spread); (b) across the 16 runs here, the *test
+  baseline of the unchanged initial skill* itself ranges 0.7421-0.7521
+  (SearchQA), 0.8230-0.8330 (TriviaQA), 0.6030-0.6260 (HotpotQA) and
+  0.6720-0.6940 (BIRD). Any table difference smaller than that range is not
+  resolved by a single run.
 
 ### Per-run commands (exact `out_root` values)
 
