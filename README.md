@@ -670,8 +670,13 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
   set -euo pipefail
   umask 077
   : "${OPENAI_COMPATIBLE_API_KEY:?export the TokenHub key first}"
-  : "${EMBEDDING_API_KEY:?export the SiliconFlow key first}"
-  export OPENAI_COMPATIBLE_API_KEY EMBEDDING_API_KEY
+  export OPENAI_COMPATIBLE_API_KEY
+  mode=${FULL12_MODE:-ten}
+  case "$mode" in
+    ten) : "${EMBEDDING_API_KEY:?export the SiliconFlow key first}"; export EMBEDDING_API_KEY ;;
+    lite-retry) ;;
+    *) echo "Invalid FULL12_MODE: $mode" >&2; exit 1 ;;
+  esac
   base=/mnt/sdd3/xuancheng/code/github
   batch="$HOME/fixed-benchmark-runs/${FULL12_BATCH:-20261124-full-w12-parallel-r2}"
   prefix=${FULL12_TMUX_PREFIX:-full12p}
@@ -689,12 +694,18 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
   unset TARGET_OPENAI_COMPATIBLE_API_KEY OPTIMIZER_OPENAI_COMPATIBLE_API_KEY
 
   declare -A repos=([skillgen]=SkillGen [skilllens]=SkillLens [skillopt-lite]=SkillOpt-Lite [evoskill]=EvoSkill)
-  declare -A revs=([skillgen]=68f04e3 [skilllens]=8396f7a [skillopt-lite]=ffd1914 [evoskill]=32a8640)
+  declare -A revs=([skillgen]=68f04e3 [skilllens]=8396f7a [skillopt-lite]=8c37ea3 [evoskill]=32a8640)
   jobs=(
     'triviaqa skillopt-lite' 'triviaqa evoskill'
     'hotpotqa skillgen' 'hotpotqa skillopt-lite' 'hotpotqa skilllens' 'hotpotqa evoskill'
     'bird skillgen' 'bird skillopt-lite' 'bird skilllens' 'bird evoskill'
   )
+  suffix=
+  if [[ "$mode" == lite-retry ]]; then
+    suffix=-attempt2
+    jobs=('triviaqa skillopt-lite' 'hotpotqa skillopt-lite' 'bird skillopt-lite')
+    test -d "$batch"
+  fi
   command -v tmux >/dev/null
   command -v opencode >/dev/null
   test -x "$py"
@@ -704,21 +715,29 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
   done
   for spec in "${jobs[@]}"; do
     read -r bench method <<< "$spec"
-    if tmux -L "$prefix-$bench-$method" list-sessions >/dev/null 2>&1; then
-      echo "Existing tmux session: $prefix-$bench-$method" >&2
+    if tmux -L "$prefix-$bench-$method$suffix" list-sessions >/dev/null 2>&1; then
+      echo "Existing tmux session: $prefix-$bench-$method$suffix" >&2
       exit 1
+    fi
+    test ! -e "$batch/$bench/$method$suffix"
+    if [[ "$mode" == lite-retry ]]; then
+      test -s "$batch/$bench/$method/exit.code"
+      test "$(cat "$batch/$bench/$method/exit.code")" != 0
+      if tmux -L "$prefix-$bench-$method" has-session -t "$prefix-$bench-$method" 2>/dev/null; then
+        echo "First attempt still running: $bench/$method" >&2; exit 1
+      fi
     fi
   done
   mkdir -p "$(dirname "$batch")"
-  mkdir "$batch"
+  if [[ "$mode" == ten ]]; then mkdir "$batch"; fi
 
   launch() (
     set -euo pipefail
     bench=$1; method=$2
     repo="$base/${repos[$method]}"
-    session="$prefix-$bench-$method"
+    session="$prefix-$bench-$method$suffix"
     split="$base/SkillOpt/data/${bench}_split"
-    export FULL12_OUT="$batch/$bench/$method" FULL12_REV="${revs[$method]}"
+    export FULL12_OUT="$batch/$bench/$method$suffix" FULL12_REV="${revs[$method]}"
     mkdir -p "$batch/$bench"
     mkdir "$FULL12_OUT"
     if [[ "$method" != skillgen ]]; then unset EMBEDDING_API_KEY; fi
@@ -775,6 +794,8 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 ```
 
 新批次位于 `$HOME/fixed-benchmark-runs/20261124-full-w12-parallel-r2/<bench>/<method>/`。每组的启动时间、实际参数和输出保存在 `started.at` 与 `console.log` 中，结束后查看 `exit.code` 及对应 test 汇总。查看某组可运行 `tmux -L full12p-bird-evoskill attach -t full12p-bird-evoskill`。
+
+并行批次首次调度使用提交 `d34d2ee` 的启动命令。三组 Lite 首次尝试在首轮 dev 前退出，原始日志保存在 `<bench>/skillopt-lite/`。补跑时在原批次的 CPU shell 设置 `export FULL12_MODE=lite-retry`，仅提供 TokenHub key，然后执行上面完整的启动块。三组修复版 Lite 立即并行，使用 `<bench>/skillopt-lite-attempt2/` 和同名后缀的 tmux；修复版 `8c37ea3` 在各自 host 中准备初始 skill 和只含 Git 跟踪源码的阶段运行文件，先执行原版初始 dev、最佳快照和 seed=1 的首批 train，然后由 OpenCode 接续三轮优化。成功以完整逐题 test、汇总文件和退出码共同确认。复现十组全新运行时使用 `FULL12_MODE=ten`、新的批次和会话前缀。
 
 | 方法 | 本批每组目录内的结果位置 |
 |---|---|
