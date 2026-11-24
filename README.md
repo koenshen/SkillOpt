@@ -648,3 +648,41 @@ for r in ("<full run>", "<agg run>"):
     print(r, s["token_summary"]["_total"]["total_tokens"], s["test_hard"], s["final_test_hard"])
 PY
 ```
+
+## CPU 实验结果备份清单
+
+以下绝对路径位于 `ssh cpu` 服务器，最近核对日期为 2026-11-24。备份整目录时请包含隐藏文件。SkillOpt 每个运行目录都包含 `summary.json`、`history.json` 和三份逐题 test 结果：`test_eval_baseline/`（训练前）、`test_eval/`（dev 选出的最佳 skill）、`test_eval_final/`（最后一步）。
+
+**SkillOpt-Lite 的日志目录和实际工作区都要备份。SkillGen 重跑的最终备份以 `exit.status` 为 0 且 `test/summary.json` 已写入为准。**
+
+| 序号 | 方法 / Benchmark | 配置或用途 | CPU 上的绝对路径 |
+|---:|---|---|---|
+| 1 | SkillOpt / SearchQA | 完整训练 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_searchqa_deepseek-v4-1-flash-huoshan-sfc_20261118_200115_fullval/` |
+| 2 | SkillOpt / SearchQA | 温和早停 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_searchqa_deepseek-v4-1-flash-huoshan-sfc_20261118_200115_earlystop_b4/` |
+| 3 | SkillOpt / SearchQA | 温和＋激进早停，ρ=0.75 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_searchqa_deepseek-v4.1-flash-1017_20261119_211735_agg_b4_rho075/` |
+| 4 | SkillOpt / SearchQA | 温和＋激进早停，ρ=0.50 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_searchqa_deepseek-v4.1-flash-1017L_20261120_002105_agg_b4_rho050/` |
+| 5 | SkillOpt / TriviaQA | 完整训练 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_fullval/` |
+| 6 | SkillOpt / TriviaQA | 温和早停 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_earlystop_b4/` |
+| 7 | SkillOpt / TriviaQA | 温和＋激进早停，ρ=0.75 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075/` |
+| 8 | SkillOpt / TriviaQA | 温和＋激进早停，ρ=0.50 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050/` |
+| 9 | SkillOpt / HotpotQA | 完整训练 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_hotpotqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_fullval/` |
+| 10 | SkillOpt / HotpotQA | 温和早停 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_hotpotqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_earlystop_b4/` |
+| 11 | SkillOpt / HotpotQA | 温和＋激进早停，ρ=0.75 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_hotpotqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075/` |
+| 12 | SkillOpt / HotpotQA | 温和＋激进早停，ρ=0.50 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_hotpotqa_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050/` |
+| 13 | SkillOpt / BIRD | 完整训练 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_bird_deepseek-v4.1-flash-1017_20261118_073747_fullval/` |
+| 14 | SkillOpt / BIRD | 温和早停 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_bird_deepseek-v4.1-flash-1017_20261118_200644_earlystop_b4/` |
+| 15 | SkillOpt / BIRD | 温和＋激进早停，ρ=0.75 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_bird_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075/` |
+| 16 | SkillOpt / BIRD | 温和＋激进早停，ρ=0.50 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_bird_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050/` |
+| 17 | SkillGen / SearchQA | 从头重跑。训练轨迹、候选 skill 和日志在此，训练前后 test 对照汇总写入 `test/summary.json` | `/mnt/sdd3/xuancheng/searchqa-original-runs/20261124-r2/skillgen/` |
+| 18 | SkillGen / SearchQA | 首次运行因限流中断，保留了初始训练轨迹、日志和退出码 | `/mnt/sdd3/xuancheng/searchqa-original-runs/20261124-r1/skillgen/` |
+| 19 | SkillLens / SearchQA | 已完成。含 `results/train/`、`results/val/`、`results/test/`、提炼记录和最终 `results/skill.md` | `/mnt/sdd3/xuancheng/searchqa-original-runs/20261124-r1/skilllens/` |
+| 20 | SkillOpt-Lite / SearchQA | 已完成。启动日志、退出码和指向下一行的 `workspace` 符号链接 | `/mnt/sdd3/xuancheng/searchqa-original-runs/20261124-r1/skillopt-lite/` |
+| 21 | SkillOpt-Lite / SearchQA | 实际工作区。含 `skill.md`、`.skillopt/history/` 和逐题结果，最终 test 在 `.skillopt/_eval_run/test_lgalkkoj/` | `/mnt/sdd3/xuancheng/code/github/SkillOpt-Lite/copilot_example/searchqa/workspaces/deepseek-v4.1-flash-1017-huoshan_L-sfc/` |
+| 22 | EvoSkill / SearchQA | 已完成的第二次运行。保留隐藏目录，包括 `workspace/.git/` 的候选版本、`workspace/.claude/skills/` 的 skill 和 `workspace/.evoskill/` 的训练与 test 结果 | `/mnt/sdd3/xuancheng/searchqa-original-runs/20261124-r1/evoskill-attempt2/` |
+| 23 | EvoSkill / SearchQA | 首次运行在初始化时退出，含日志和退出码 | `/mnt/sdd3/xuancheng/searchqa-original-runs/20261124-r1/evoskill/` |
+| 24 | 输入 / SearchQA | 五个方法共用的 400 道 train、200 道 dev、1,400 道 test 及固定题目清单 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/data/searchqa_split/` |
+| 25 | 输入 / TriviaQA | 固定 train、dev、test 题及清单 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/data/triviaqa_split/` |
+| 26 | 输入 / HotpotQA | 固定 train、dev、test 题及清单 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/data/hotpotqa_split/` |
+| 27 | 输入 / BIRD | 固定 train、dev、test 题及清单 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/data/bird_split/` |
+| 28 | 输入 / BIRD | 执行和评测 SQL 用的数据库，与 BIRD 题目一同备份 | `/mnt/sdd3/xuancheng/code/github/bird-text-to-sql-260820/data_dev/dev_databases/` |
+| 29 | SkillOpt-Lite / OpenCode | 可选。需要原始优化对话和调用用量时，从共享库导出本次会话 `ses_df5a18fe6ffeEKY7k4Nqr5oaPW` | `/mnt/sdd3/xuancheng/.local/share/opencode/opencode.db` |
