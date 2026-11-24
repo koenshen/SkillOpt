@@ -660,24 +660,21 @@ read -rsp 'TokenHub API key: ' OPENAI_COMPATIBLE_API_KEY; echo; export OPENAI_CO
 read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDING_API_KEY
 ```
 
-下面的命令一次创建 12 个独立的 tmux 会话。两条队列各允许一个任务运行。SkillLens 提炼有独立并发，运行期间独占本批两个名额。重复实验时设置新的 `FULL12_BATCH`，若与已有批次同时运行，再设置新的 `FULL12_TMUX_PREFIX`。
+旧批次 `20261124-full-w12-r1` 的 TriviaQA/SkillGen 和 TriviaQA/SkillLens 已跑完，各有 1,000 条最终 test 结果。两个结果仍在旧批次的 `triviaqa/{skillgen,skilllens}/results/`。首次批次与 Lite 工作目录修复的启动记录分别见 Git 提交 `3ea1f36`、`d2886b8`。
+
+下面是其余十组原版实验实际使用的并行命令。从 Mac 登录 `ssh cpu`、导出上述两项凭据后，在 CPU 的 Bash 中执行。每项直接启动一个独立 tmux 会话、各有 12 个答题 worker。新输出使用 `20261124-full-w12-parallel-r2`。重复实验时选用新的 `FULL12_BATCH` 和 `FULL12_TMUX_PREFIX`。
 
 ```bash
-# CPU tmux launch (20261124-full-w12-r1)
+# CPU parallel launch (20261124-full-w12-parallel-r2)
 (
   set -euo pipefail
   umask 077
-  : "${OPENAI_COMPATIBLE_API_KEY:?export the TokenHub key}"
-  scope=${FULL12_SCOPE:-all}
-  case "$scope" in
-    all) : "${EMBEDDING_API_KEY:?export the SiliconFlow key}"; export EMBEDDING_API_KEY ;;
-    lite-retry) ;;
-    *) echo "Unsupported FULL12_SCOPE: $scope" >&2; exit 1 ;;
-  esac
-  export OPENAI_COMPATIBLE_API_KEY
+  : "${OPENAI_COMPATIBLE_API_KEY:?export the TokenHub key first}"
+  : "${EMBEDDING_API_KEY:?export the SiliconFlow key first}"
+  export OPENAI_COMPATIBLE_API_KEY EMBEDDING_API_KEY
   base=/mnt/sdd3/xuancheng/code/github
-  batch="$HOME/fixed-benchmark-runs/${FULL12_BATCH:-20261124-full-w12-r1}"
-  prefix=${FULL12_TMUX_PREFIX:-full12}
+  batch="$HOME/fixed-benchmark-runs/${FULL12_BATCH:-20261124-full-w12-parallel-r2}"
+  prefix=${FULL12_TMUX_PREFIX:-full12p}
   py="$HOME/miniconda3/envs/rdagent/bin/python"
   evo_py="$HOME/miniconda3/bin/python"
   export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
@@ -694,47 +691,34 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
   declare -A repos=([skillgen]=SkillGen [skilllens]=SkillLens [skillopt-lite]=SkillOpt-Lite [evoskill]=EvoSkill)
   declare -A revs=([skillgen]=68f04e3 [skilllens]=8396f7a [skillopt-lite]=ffd1914 [evoskill]=32a8640)
   jobs=(
-    'A triviaqa skillgen'       'B hotpotqa skillopt-lite'
-    'A bird evoskill'           'B triviaqa skilllens'
-    'A hotpotqa skillgen'       'B triviaqa skillopt-lite'
-    'A hotpotqa skilllens'      'B triviaqa evoskill'
-    'A bird skillgen'           'B bird skillopt-lite'
-    'A bird skilllens'          'B hotpotqa evoskill'
+    'triviaqa skillopt-lite' 'triviaqa evoskill'
+    'hotpotqa skillgen' 'hotpotqa skillopt-lite' 'hotpotqa skilllens' 'hotpotqa evoskill'
+    'bird skillgen' 'bird skillopt-lite' 'bird skilllens' 'bird evoskill'
   )
-  suffix=
-  if [[ "$scope" == lite-retry ]]; then
-    jobs=('B hotpotqa skillopt-lite' 'B triviaqa skillopt-lite' 'B bird skillopt-lite')
-    suffix=-attempt2
-    test -d "$batch" && test -f "$batch/queue-B.lock" && test -f "$batch/provider.lock"
-  fi
-  command -v tmux flock opencode >/dev/null
-  test -x "$py" && test -x "$evo_py"
+  command -v tmux >/dev/null
+  command -v opencode >/dev/null
+  test -x "$py"
+  test -x "$evo_py"
   for method in "${!repos[@]}"; do
     test "$(git -C "$base/${repos[$method]}" rev-parse --short=7 HEAD)" = "${revs[$method]}"
   done
   for spec in "${jobs[@]}"; do
-    read -r lane bench method <<< "$spec"
-    if tmux -L "$prefix-$bench-$method$suffix" list-sessions >/dev/null 2>&1; then
-      echo "Existing tmux server: $prefix-$bench-$method$suffix" >&2
+    read -r bench method <<< "$spec"
+    if tmux -L "$prefix-$bench-$method" list-sessions >/dev/null 2>&1; then
+      echo "Existing tmux session: $prefix-$bench-$method" >&2
       exit 1
     fi
-    test ! -e "$batch/$bench/$method$suffix"
   done
   mkdir -p "$(dirname "$batch")"
-  if [[ "$scope" == all ]]; then mkdir "$batch"; fi
+  mkdir "$batch"
 
   launch() (
     set -euo pipefail
-    lane=$1; bench=$2; method=$3
+    bench=$1; method=$2
     repo="$base/${repos[$method]}"
-    session="$prefix-$bench-$method$suffix"
+    session="$prefix-$bench-$method"
     split="$base/SkillOpt/data/${bench}_split"
-    export FULL12_OUT="$batch/$bench/$method$suffix" FULL12_LANE="$batch/queue-$lane.lock"
-    export FULL12_GATE="$batch/provider.lock" FULL12_ACCESS=-s FULL12_REV="${revs[$method]}"
-    unset FULL12_PRIOR
-    if [[ "$scope" == lite-retry ]]; then
-      export FULL12_PRIOR="$batch/$bench/$method" FULL12_BENCH="$bench"
-    fi
+    export FULL12_OUT="$batch/$bench/$method" FULL12_REV="${revs[$method]}"
     mkdir -p "$batch/$bench"
     mkdir "$FULL12_OUT"
     if [[ "$method" != skillgen ]]; then unset EMBEDDING_API_KEY; fi
@@ -744,7 +728,6 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
              --split-dir "$split" --output "$FULL12_OUT/results")
         ;;
       skilllens)
-        export FULL12_ACCESS=-x
         cmd=("$py" -B -u -m skilllens.searchqa --benchmark "$bench" --split-dir "$split"
              --extract-config "$repo/configs/examples/seal0_parallel.yaml" --provider openai --api-style chat
              --workers "$SKILLOPT_WORKERS" --target-model "$OPENAI_COMPATIBLE_MODEL"
@@ -752,6 +735,7 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
         ;;
       skillopt-lite)
         export SKILLOPT_AUTH_MODE=openai_compatible SKILLOPT_LITE_PYTHON="$py"
+        export XDG_DATA_HOME="$FULL12_OUT/opencode-data" XDG_STATE_HOME="$FULL12_OUT/opencode-state"
         export SKILLOPT_DONE_FILE="$FULL12_OUT/phase-notifications.log"
         export "${bench^^}_SPLIT_DIR=$split"
         cmd=("$py" -B -u copilot_example/searchqa/opencode_loop.py --benchmark "$bench"
@@ -775,34 +759,22 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
       exec > >(tee -a "$FULL12_OUT/console.log") 2>&1
       finish() { rc=$?; printf "%s\n" "$rc" > "$FULL12_OUT/exit.code"; date -Is > "$FULL12_OUT/finished.at"; }
       trap finish EXIT
-      date -Is | tee "$FULL12_OUT/queued.at"
-      exec 9<>"$FULL12_LANE"; flock -x 9
-      exec 8<>"$FULL12_GATE"; flock "$FULL12_ACCESS" 8
-      if [[ -n "${FULL12_PRIOR:-}" && -s "$FULL12_PRIOR/exit.code" && "$(cat "$FULL12_PRIOR/exit.code")" == 0 ]]; then
-        if "$SKILLOPT_LITE_PYTHON" -B -c "import sys; from pathlib import Path; from copilot_example.searchqa.opencode_loop import verify_test; verify_test(Path(sys.argv[1]), sys.argv[2])" "$FULL12_PRIOR/host" "$FULL12_BENCH" >/dev/null 2>&1; then
-          printf "%s\n" "$FULL12_PRIOR" > "$FULL12_OUT/completed-in-prior-attempt"
-          echo "Existing verified test: $FULL12_PRIOR"
-          exit 0
-        fi
-      fi
       test "$(git rev-parse --short=7 HEAD)" = "$FULL12_REV"
       date -Is | tee "$FULL12_OUT/started.at"
       printf "repo=%s commit=%s model=%s workers=%s\n" "$PWD" "$(git rev-parse HEAD)" "$OPENAI_COMPATIBLE_MODEL" "$SKILLOPT_WORKERS"
       printf "argv:"; printf " %q" "$@"; printf "\n"
-      "$@" 8>&- 9>&-
+      "$@"
     ' _ "${cmd[@]}"
-    echo "Scheduled $session"
+    echo "Launched $session"
   )
   for spec in "${jobs[@]}"; do
-    read -r lane bench method <<< "$spec"
-    launch "$lane" "$bench" "$method"
+    read -r bench method <<< "$spec"
+    launch "$bench" "$method"
   done
 )
 ```
 
-本批根目录为 `$HOME/fixed-benchmark-runs/20261124-full-w12-r1/`。每组的 `<bench>/<method>/` 包含 `console.log`；只有 `queued.at` 表示排队，出现 `started.at` 表示已放行，结束后 `exit.code` 记录进程退出码。查看某组可运行 `tmux -L full12-triviaqa-skillgen attach -t full12-triviaqa-skillgen`，也可直接 `tail -f` 对应日志。
-
-本批最初执行的是提交 `3ea1f36` 中的启动块。HotpotQA/Lite 的首次尝试使用 `ab0487f`，OpenCode 工具落在源仓根目录，未产出 test 就返回 0。复现完整批次用上面的正常模式。实际修复时，在同一批次、同一组锁上设置 `export FULL12_SCOPE=lite-retry` 并重跑上方代码块，仅调度三项 Lite；输出与 tmux 名加 `-attempt2`。修复版本 `ffd1914` 显式传入 OpenCode 的运行目录，并在退出时核对固定 test IDs 和逐题结果。首次日志保留，旧 Lite 排队会话在提交号已变化时自动退出。
+新批次位于 `$HOME/fixed-benchmark-runs/20261124-full-w12-parallel-r2/<bench>/<method>/`。每组的启动时间、实际参数和输出保存在 `started.at` 与 `console.log` 中，结束后查看 `exit.code` 及对应 test 汇总。查看某组可运行 `tmux -L full12p-bird-evoskill attach -t full12p-bird-evoskill`。
 
 | 方法 | 本批每组目录内的结果位置 |
 |---|---|
