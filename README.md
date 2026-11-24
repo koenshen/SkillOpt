@@ -712,6 +712,7 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 
   declare -A repos=([skillgen]=SkillGen [skilllens]=SkillLens [skillopt-lite]=SkillOpt-Lite [evoskill]=EvoSkill)
   declare -A revs=([skillgen]=68f04e3 [skilllens]=8396f7a [skillopt-lite]=8c37ea3 [evoskill]=32a8640)
+  if [[ "$mode" == all ]]; then revs[skillopt-lite]=fc34dd5; fi
   jobs=()
   for bench in triviaqa hotpotqa bird; do
     for method in skillgen skillopt-lite skilllens evoskill; do
@@ -820,6 +821,8 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 ```
 
 新完整批次按 benchmark 归档，与 `~/searchqa-original-runs/` 并列。三个根目录为 `~/triviaqa-original-runs/`、`~/hotpotqa-original-runs/` 和 `~/bird-original-runs/`。每个根目录内使用 `full-w12_<模型>_<YYYYMMDD_HHMMSS>/<method>_<模型>_<YYYYMMDD_HHMMSS>/`，12 组共用一次生成的北京时间批次时间戳。每组实际启动时间见 `started.at`，完整模型名与参数见 `console.log`。结束后查看 `exit.code` 和 test 汇总。连接会话时使用启动输出中的名称：`tmux -L "$session" attach -t "$session"`。
+
+新 FULL 使用的 Lite 提交为 `fc34dd5`。其隔离宿主预建 `workspace/.skillopt/phase-logs/`，并给优化器提供在此写入阶段日志、退出标记的命令。
 
 上一批（2026-11-25 00:26:51，北京时间）使用提交 `93a2d24` 的命令，模型为 `deepseek-v4.1-flash-1017/huoshan_L/sfc`。该批现有路径为 `/mnt/sdd3/xuancheng/fixed-benchmark-runs/full-w12-all-r1/<bench>/<method>/`，会话前缀为 `full12all`。
 
