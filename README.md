@@ -649,6 +649,142 @@ for r in ("<full run>", "<agg run>"):
 PY
 ```
 
+## TriviaQA、HotpotQA、BIRD：四个原版方法的 CPU 启动命令
+
+2026-11-24 批次 `20261124-full-w12-r1` 使用固定划分和各方法的 FULL 默认训练流程。TriviaQA 和 HotpotQA 各为 1,600 / 200 / 1,000 题，BIRD 为 834 / 200 / 500 题。答题 worker 为 12，target 和 optimizer 的生成上限均为 131,072。SkillGen 额外使用 SiliconFlow 的 BAAI/bge-m3。四个仓库各自运行本仓库的程序。
+
+从 Mac 执行 `ssh cpu`，在 CPU 的 Bash 中输入并导出两项凭据。已导出时可跳过这一步。
+
+```bash
+read -rsp 'TokenHub API key: ' OPENAI_COMPATIBLE_API_KEY; echo; export OPENAI_COMPATIBLE_API_KEY
+read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDING_API_KEY
+```
+
+下面的命令一次创建 12 个独立的 tmux 会话。两条队列各允许一个任务运行。SkillLens 提炼有独立并发，运行期间独占本批两个名额。重复实验时设置新的 `FULL12_BATCH`，若与已有批次同时运行，再设置新的 `FULL12_TMUX_PREFIX`。
+
+```bash
+# CPU tmux launch (20261124-full-w12-r1)
+(
+  set -euo pipefail
+  umask 077
+  : "${OPENAI_COMPATIBLE_API_KEY:?export the TokenHub key}"
+  : "${EMBEDDING_API_KEY:?export the SiliconFlow key}"
+  export OPENAI_COMPATIBLE_API_KEY EMBEDDING_API_KEY
+  base=/mnt/sdd3/xuancheng/code/github
+  batch="$HOME/fixed-benchmark-runs/${FULL12_BATCH:-20261124-full-w12-r1}"
+  prefix=${FULL12_TMUX_PREFIX:-full12}
+  py="$HOME/miniconda3/envs/rdagent/bin/python"
+  evo_py="$HOME/miniconda3/bin/python"
+  export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
+  export OPENAI_COMPATIBLE_MODEL=deepseek-v4.1-flash-1017/huoshan_L/sfc
+  export TARGET_OPENAI_COMPATIBLE_MAX_TOKENS=131072 OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+  export SKILLOPT_WORKERS=12 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+  export EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1/embeddings EMBEDDING_MODEL=BAAI/bge-m3
+  export BIRD_DB_ROOT="$base/bird-text-to-sql-260820/data_dev/dev_databases"
+  export PATH="$HOME/.opencode/bin:$PATH" OPENCODE_DISABLE_AUTOUPDATE=true OPENCODE_DISABLE_MODELS_FETCH=true
+  unset TARGET_OPENAI_COMPATIBLE_MODEL OPTIMIZER_OPENAI_COMPATIBLE_MODEL SKILLOPT_LITE_TARGET_MODEL
+  unset TARGET_OPENAI_COMPATIBLE_BASE_URL OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL
+  unset TARGET_OPENAI_COMPATIBLE_API_KEY OPTIMIZER_OPENAI_COMPATIBLE_API_KEY
+
+  declare -A repos=([skillgen]=SkillGen [skilllens]=SkillLens [skillopt-lite]=SkillOpt-Lite [evoskill]=EvoSkill)
+  declare -A revs=([skillgen]=68f04e3 [skilllens]=8396f7a [skillopt-lite]=ab0487f [evoskill]=32a8640)
+  jobs=(
+    'A triviaqa skillgen'       'B hotpotqa skillopt-lite'
+    'A bird evoskill'           'B triviaqa skilllens'
+    'A hotpotqa skillgen'       'B triviaqa skillopt-lite'
+    'A hotpotqa skilllens'      'B triviaqa evoskill'
+    'A bird skillgen'           'B bird skillopt-lite'
+    'A bird skilllens'          'B hotpotqa evoskill'
+  )
+  command -v tmux flock opencode >/dev/null
+  test -x "$py" && test -x "$evo_py"
+  for method in "${!repos[@]}"; do
+    test "$(git -C "$base/${repos[$method]}" rev-parse --short=7 HEAD)" = "${revs[$method]}"
+  done
+  for spec in "${jobs[@]}"; do
+    read -r lane bench method <<< "$spec"
+    if tmux -L "$prefix-$bench-$method" list-sessions >/dev/null 2>&1; then
+      echo "Existing tmux server: $prefix-$bench-$method" >&2
+      exit 1
+    fi
+  done
+  mkdir -p "$(dirname "$batch")"
+  mkdir "$batch"
+
+  launch() (
+    set -euo pipefail
+    lane=$1; bench=$2; method=$3
+    repo="$base/${repos[$method]}"
+    session="$prefix-$bench-$method"
+    split="$base/SkillOpt/data/${bench}_split"
+    export FULL12_OUT="$batch/$bench/$method" FULL12_LANE="$batch/queue-$lane.lock"
+    export FULL12_GATE="$batch/provider.lock" FULL12_ACCESS=-s FULL12_REV="${revs[$method]}"
+    mkdir -p "$FULL12_OUT"
+    if [[ "$method" != skillgen ]]; then unset EMBEDDING_API_KEY; fi
+    case "$method" in
+      skillgen)
+        cmd=("$py" -B -u -m benchmarks.searchqa --benchmark "$bench" --config "$repo/config.yaml"
+             --split-dir "$split" --output "$FULL12_OUT/results")
+        ;;
+      skilllens)
+        export FULL12_ACCESS=-x
+        cmd=("$py" -B -u -m skilllens.searchqa --benchmark "$bench" --split-dir "$split"
+             --extract-config "$repo/configs/examples/seal0_parallel.yaml" --provider openai --api-style chat
+             --workers "$SKILLOPT_WORKERS" --target-model "$OPENAI_COMPATIBLE_MODEL"
+             --extract-model "$OPENAI_COMPATIBLE_MODEL" --output "$FULL12_OUT/results")
+        ;;
+      skillopt-lite)
+        export SKILLOPT_AUTH_MODE=openai_compatible SKILLOPT_LITE_PYTHON="$py"
+        export SKILLOPT_DONE_FILE="$FULL12_OUT/phase-notifications.log"
+        export "${bench^^}_SPLIT_DIR=$split"
+        cmd=("$py" -B -u copilot_example/searchqa/opencode_loop.py --benchmark "$bench"
+             --rounds 3 --batch 20 --run-dir "$FULL12_OUT/host")
+        ;;
+      evoskill)
+        export PYTHONPATH="$HOME/.cache/uv/archive-v0/Xgr_JH5lu1epaTUF"
+        GIT_AUTHOR_NAME=$(git -C "$repo" config --get user.name)
+        GIT_AUTHOR_EMAIL=$(git -C "$repo" config --get user.email)
+        : "${GIT_AUTHOR_NAME:?missing Git author name}" "${GIT_AUTHOR_EMAIL:?missing Git author email}"
+        export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL
+        export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+        cmd=("$evo_py" -B -u examples/searchqa/run.py --benchmark "$bench" --harness openai-compatible
+             --model "$OPENAI_COMPATIBLE_MODEL" --workers "$SKILLOPT_WORKERS"
+             --split-dir "$split" --work-dir "$FULL12_OUT/workspace")
+        ;;
+    esac
+    tmux -L "$session" -f /dev/null new-session -d -s "$session" -c "$repo" bash -c '
+      set -euo pipefail
+      umask 077
+      exec > >(tee -a "$FULL12_OUT/console.log") 2>&1
+      finish() { rc=$?; printf "%s\n" "$rc" > "$FULL12_OUT/exit.code"; date -Is > "$FULL12_OUT/finished.at"; }
+      trap finish EXIT
+      date -Is | tee "$FULL12_OUT/queued.at"
+      exec 9<>"$FULL12_LANE"; flock -x 9
+      exec 8<>"$FULL12_GATE"; flock "$FULL12_ACCESS" 8
+      test "$(git rev-parse --short=7 HEAD)" = "$FULL12_REV"
+      date -Is | tee "$FULL12_OUT/started.at"
+      printf "repo=%s commit=%s model=%s workers=%s\n" "$PWD" "$(git rev-parse HEAD)" "$OPENAI_COMPATIBLE_MODEL" "$SKILLOPT_WORKERS"
+      printf "argv:"; printf " %q" "$@"; printf "\n"
+      "$@" 8>&- 9>&-
+    ' _ "${cmd[@]}"
+    echo "Scheduled $session"
+  )
+  for spec in "${jobs[@]}"; do
+    read -r lane bench method <<< "$spec"
+    launch "$lane" "$bench" "$method"
+  done
+)
+```
+
+本批根目录为 `$HOME/fixed-benchmark-runs/20261124-full-w12-r1/`。每组的 `<bench>/<method>/` 包含 `console.log`；只有 `queued.at` 表示排队，出现 `started.at` 表示已放行，结束后 `exit.code` 记录进程退出码。查看某组可运行 `tmux -L full12-triviaqa-skillgen attach -t full12-triviaqa-skillgen`，也可直接 `tail -f` 对应日志。
+
+| 方法 | 本批每组目录内的结果位置 |
+|---|---|
+| SkillGen | `results/summary.json`、`results/baseline.jsonl`，部署候选后另有 `results/skill.jsonl` |
+| SkillOpt-Lite | `host/workspace/.skillopt/_eval_run/test_*/eval_summary.json` 和同目录 `results.jsonl` |
+| SkillLens | `results/test/eval_summary.json` 和 `results/test/results.jsonl` |
+| EvoSkill | `workspace/.evoskill/test_summary.json` 和 `workspace/.evoskill/test_results.jsonl` |
+
 ## CPU 实验结果备份清单
 
 以下绝对路径位于 `ssh cpu` 服务器，最近核对日期为 2026-11-24。备份整目录时请包含隐藏文件。SkillOpt 每个运行目录都包含 `summary.json`、`history.json` 和三份逐题 test 结果：`test_eval_baseline/`（训练前）、`test_eval/`（dev 选出的最佳 skill）、`test_eval_final/`（最后一步）。
