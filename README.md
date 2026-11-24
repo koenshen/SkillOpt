@@ -662,24 +662,30 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 
 旧批次 `20261124-full-w12-r1` 的 TriviaQA/SkillGen 和 TriviaQA/SkillLens 已跑完，各有 1,000 条最终 test 结果。两个结果仍在旧批次的 `triviaqa/{skillgen,skilllens}/results/`。首次批次与 Lite 工作目录修复的启动记录分别见 Git 提交 `3ea1f36`、`d2886b8`。
 
-下面是其余十组原版实验实际使用的并行命令。从 Mac 登录 `ssh cpu`、导出上述两项凭据后，在 CPU 的 Bash 中执行。每项直接启动一个独立 tmux 会话、各有 12 个答题 worker。新输出使用 `20261124-full-w12-parallel-r2`。重复实验时选用新的 `FULL12_BATCH` 和 `FULL12_TMUX_PREFIX`。
+默认的完整实验（`FULL12_MODE=all`）是 4 个方法各跑 TriviaQA、HotpotQA、BIRD，共 12 组。每组使用独立 tmux 并行运行，答题并发为每组 12。默认输出批次为 `full-w12-all-r1`，tmux 前缀为 `full12all`。历史补跑模式 `ten` 跳过当时已经完成的两组 TriviaQA，`lite-retry` 只重试三个失败的 Lite 任务。重复运行时设置新的 `FULL12_BATCH` 和 `FULL12_TMUX_PREFIX`。
 
 ```bash
-# CPU parallel launch (20261124-full-w12-parallel-r2)
+# CPU parallel launch (4 methods x 3 benchmarks)
 (
   set -euo pipefail
   umask 077
   : "${OPENAI_COMPATIBLE_API_KEY:?export the TokenHub key first}"
   export OPENAI_COMPATIBLE_API_KEY
-  mode=${FULL12_MODE:-ten}
+  mode=${FULL12_MODE:-all}
   case "$mode" in
-    ten) : "${EMBEDDING_API_KEY:?export the SiliconFlow key first}"; export EMBEDDING_API_KEY ;;
+    all|ten) : "${EMBEDDING_API_KEY:?export the SiliconFlow key first}"; export EMBEDDING_API_KEY ;;
     lite-retry) ;;
     *) echo "Invalid FULL12_MODE: $mode" >&2; exit 1 ;;
   esac
   base=/mnt/sdd3/xuancheng/code/github
-  batch="$HOME/fixed-benchmark-runs/${FULL12_BATCH:-20261124-full-w12-parallel-r2}"
-  prefix=${FULL12_TMUX_PREFIX:-full12p}
+  default_batch=20261124-full-w12-parallel-r2
+  default_prefix=full12p
+  if [[ "$mode" == all ]]; then
+    default_batch=full-w12-all-r1
+    default_prefix=full12all
+  fi
+  batch="$HOME/fixed-benchmark-runs/${FULL12_BATCH:-$default_batch}"
+  prefix=${FULL12_TMUX_PREFIX:-$default_prefix}
   py="$HOME/miniconda3/envs/rdagent/bin/python"
   evo_py="$HOME/miniconda3/bin/python"
   export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
@@ -695,15 +701,17 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 
   declare -A repos=([skillgen]=SkillGen [skilllens]=SkillLens [skillopt-lite]=SkillOpt-Lite [evoskill]=EvoSkill)
   declare -A revs=([skillgen]=68f04e3 [skilllens]=8396f7a [skillopt-lite]=8c37ea3 [evoskill]=32a8640)
-  jobs=(
-    'triviaqa skillopt-lite' 'triviaqa evoskill'
-    'hotpotqa skillgen' 'hotpotqa skillopt-lite' 'hotpotqa skilllens' 'hotpotqa evoskill'
-    'bird skillgen' 'bird skillopt-lite' 'bird skilllens' 'bird evoskill'
-  )
+  jobs=()
+  for bench in triviaqa hotpotqa bird; do
+    for method in skillgen skillopt-lite skilllens evoskill; do
+      if [[ "$mode" == ten && "$bench" == triviaqa && ( "$method" == skillgen || "$method" == skilllens ) ]]; then continue; fi
+      if [[ "$mode" == lite-retry && "$method" != skillopt-lite ]]; then continue; fi
+      jobs+=("$bench $method")
+    done
+  done
   suffix=
   if [[ "$mode" == lite-retry ]]; then
     suffix=-attempt2
-    jobs=('triviaqa skillopt-lite' 'hotpotqa skillopt-lite' 'bird skillopt-lite')
     test -d "$batch"
   fi
   command -v tmux >/dev/null
@@ -729,7 +737,7 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
     fi
   done
   mkdir -p "$(dirname "$batch")"
-  if [[ "$mode" == ten ]]; then mkdir "$batch"; fi
+  if [[ "$mode" != lite-retry ]]; then mkdir "$batch"; fi
 
   launch() (
     set -euo pipefail
@@ -793,7 +801,7 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 )
 ```
 
-新批次位于 `$HOME/fixed-benchmark-runs/20261124-full-w12-parallel-r2/<bench>/<method>/`。每组的启动时间、实际参数和输出保存在 `started.at` 与 `console.log` 中，结束后查看 `exit.code` 及对应 test 汇总。查看某组可运行 `tmux -L full12p-bird-evoskill attach -t full12p-bird-evoskill`。
+结果位于 `$HOME/fixed-benchmark-runs/<批次>/<bench>/<method>/`。每组的启动时间、实际参数和输出保存在 `started.at` 与 `console.log` 中，结束后查看 `exit.code` 及对应 test 汇总。查看某组可运行 `tmux -L full12all-bird-evoskill attach -t full12all-bird-evoskill`。
 
 并行批次首次调度使用提交 `d34d2ee` 的启动命令。三组 Lite 首次尝试在首轮 dev 前退出，原始日志保存在 `<bench>/skillopt-lite/`。补跑时在原批次的 CPU shell 设置 `export FULL12_MODE=lite-retry`，仅提供 TokenHub key，然后执行上面完整的启动块。三组修复版 Lite 立即并行，使用 `<bench>/skillopt-lite-attempt2/` 和同名后缀的 tmux；修复版 `8c37ea3` 在各自 host 中准备初始 skill 和只含 Git 跟踪源码的阶段运行文件，先执行原版初始 dev、最佳快照和 seed=1 的首批 train，然后由 OpenCode 接续三轮优化。成功以完整逐题 test、汇总文件和退出码共同确认。复现十组全新运行时使用 `FULL12_MODE=ten`、新的批次和会话前缀。
 
