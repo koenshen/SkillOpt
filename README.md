@@ -893,3 +893,42 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 | BIRD | SkillOpt-Lite | `/mnt/sdd3/xuancheng/bird-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
 | BIRD | SkillLens | `/mnt/sdd3/xuancheng/bird-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
 | BIRD | EvoSkill | `/mnt/sdd3/xuancheng/bird-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+
+### 四个 baseline 的第 2、3 次重复运行（批次 `20261125_043046`）
+
+本批次使用 `deepseek-v4.1-flash-1017/huoshan_L/sfc`，每组答题并发 12。下表列出 CPU 上保留的 29 个运行目录及 3 个缺项。部分作业在登记时仍在运行，完成情况以各目录的退出码、最终 test 汇总和实测题数为准。
+
+| Benchmark | 方法 | 第几次运行 | CPU 上的绝对路径 |
+|---|---|---:|---|
+| SearchQA | SkillGen | 2 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| SearchQA | SkillGen | 3 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| SearchQA | SkillOpt-Lite | 2 | 缺失（作业提前退出，未生成最终 test 汇总） |
+| SearchQA | SkillOpt-Lite | 3 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite-attempt3_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043318/` |
+| SearchQA | SkillLens | 2 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| SearchQA | SkillLens | 3 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| SearchQA | EvoSkill | 2 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| SearchQA | EvoSkill | 3 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| TriviaQA | SkillGen | 2 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| TriviaQA | SkillGen | 3 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| TriviaQA | SkillOpt-Lite | 2 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| TriviaQA | SkillOpt-Lite | 3 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite-attempt2_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043408/` |
+| TriviaQA | SkillLens | 2 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| TriviaQA | SkillLens | 3 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| TriviaQA | EvoSkill | 2 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| TriviaQA | EvoSkill | 3 | `/mnt/sdd3/xuancheng/triviaqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| HotpotQA | SkillGen | 2 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| HotpotQA | SkillGen | 3 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| HotpotQA | SkillOpt-Lite | 2 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| HotpotQA | SkillOpt-Lite | 3 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite-retry_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043502/` |
+| HotpotQA | SkillLens | 2 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| HotpotQA | SkillLens | 3 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| HotpotQA | EvoSkill | 2 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| HotpotQA | EvoSkill | 3 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| BIRD | SkillGen | 2 | `/mnt/sdd3/xuancheng/bird-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| BIRD | SkillGen | 3 | `/mnt/sdd3/xuancheng/bird-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| BIRD | SkillOpt-Lite | 2 | 缺失（作业提前退出，未生成最终 test 汇总） |
+| BIRD | SkillOpt-Lite | 3 | 缺失（作业提前退出，未生成最终 test 汇总） |
+| BIRD | SkillLens | 2 | `/mnt/sdd3/xuancheng/bird-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| BIRD | SkillLens | 3 | `/mnt/sdd3/xuancheng/bird-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| BIRD | EvoSkill | 2 | `/mnt/sdd3/xuancheng/bird-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+| BIRD | EvoSkill | 3 | `/mnt/sdd3/xuancheng/bird-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
