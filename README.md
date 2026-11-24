@@ -872,3 +872,24 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 | 27 | 输入 / BIRD | 固定 train、dev、test 题及清单 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/data/bird_split/` |
 | 28 | 输入 / BIRD | 执行和评测 SQL 用的数据库，与 BIRD 题目一同备份 | `/mnt/sdd3/xuancheng/code/github/bird-text-to-sql-260820/data_dev/dev_databases/` |
 | 29 | SkillOpt-Lite / OpenCode | 可选。需要原始优化对话和调用用量时，从共享库导出本次会话 `ses_df5a18fe6ffeEKY7k4Nqr5oaPW` | `/mnt/sdd3/xuancheng/.local/share/opencode/opencode.db` |
+
+### 首次有效运行结果目录（批次 `20261125_004054`）
+
+下表记录四个 baseline 在 TriviaQA、HotpotQA 和 BIRD 上的 12 组完整训练结果。已在 CPU 服务器逐项核实目录存在、退出码为 `0`，且最终 test 汇总分别覆盖 1,000、1,000 和 500 题。
+
+其余 20 组首次有效结果见上方备份清单：第 1–16 项为 SkillOpt 的四种配置，第 17、19、20–21、22 项为四个 baseline 的 SearchQA 结果，其中第 20–21 项对应同一次 SkillOpt-Lite 运行。
+
+| Benchmark | 方法 | CPU 上的绝对路径 |
+|---|---|---|
+| TriviaQA | SkillGen | `/mnt/sdd3/xuancheng/triviaqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| TriviaQA | SkillOpt-Lite | `/mnt/sdd3/xuancheng/triviaqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| TriviaQA | SkillLens | `/mnt/sdd3/xuancheng/triviaqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| TriviaQA | EvoSkill | `/mnt/sdd3/xuancheng/triviaqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| HotpotQA | SkillGen | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| HotpotQA | SkillOpt-Lite | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| HotpotQA | SkillLens | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| HotpotQA | EvoSkill | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| BIRD | SkillGen | `/mnt/sdd3/xuancheng/bird-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| BIRD | SkillOpt-Lite | `/mnt/sdd3/xuancheng/bird-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| BIRD | SkillLens | `/mnt/sdd3/xuancheng/bird-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
+| BIRD | EvoSkill | `/mnt/sdd3/xuancheng/bird-original-runs/full-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_004054/` |
