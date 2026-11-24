@@ -662,7 +662,7 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 
 旧批次 `20261124-full-w12-r1` 的 TriviaQA/SkillGen 和 TriviaQA/SkillLens 已跑完，各有 1,000 条最终 test 结果。两个结果仍在旧批次的 `triviaqa/{skillgen,skilllens}/results/`。首次批次与 Lite 工作目录修复的启动记录分别见 Git 提交 `3ea1f36`、`d2886b8`。
 
-默认的完整实验（`FULL12_MODE=all`）是 4 个方法各跑 TriviaQA、HotpotQA、BIRD，共 12 组。每组使用独立 tmux 并行运行，答题并发为每组 12。默认输出批次为 `full-w12-all-r1`，tmux 前缀为 `full12all`。历史补跑模式 `ten` 跳过当时已经完成的两组 TriviaQA，`lite-retry` 只重试三个失败的 Lite 任务。重复运行时设置新的 `FULL12_BATCH` 和 `FULL12_TMUX_PREFIX`。
+默认的完整实验（`FULL12_MODE=all`）是 4 个方法各跑 TriviaQA、HotpotQA、BIRD，共 12 组。每组使用独立 tmux 并行运行，答题并发为每组 12。默认批次和各任务的结果目录名均带模型部署名（斜杠替换为连字符）和北京时间批次启动时间戳。历史补跑模式 `ten` 跳过当时已经完成的两组 TriviaQA，`lite-retry` 只重试三个失败的 Lite 任务。重复运行时设置新的 `FULL12_BATCH` 和 `FULL12_TMUX_PREFIX`。
 
 ```bash
 # CPU parallel launch (4 methods x 3 benchmarks)
@@ -678,18 +678,20 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
     *) echo "Invalid FULL12_MODE: $mode" >&2; exit 1 ;;
   esac
   base=/mnt/sdd3/xuancheng/code/github
+  export OPENAI_COMPATIBLE_MODEL=deepseek-v4.1-flash-1017/huoshan_L/sfc
   default_batch=20261124-full-w12-parallel-r2
   default_prefix=full12p
   if [[ "$mode" == all ]]; then
-    default_batch=full-w12-all-r1
-    default_prefix=full12all
+    stamp=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)
+    model_tag=${OPENAI_COMPATIBLE_MODEL//\//-}
+    default_batch="full-w12_${model_tag}_${stamp}"
+    default_prefix="full12all-$stamp"
   fi
   batch="$HOME/fixed-benchmark-runs/${FULL12_BATCH:-$default_batch}"
   prefix=${FULL12_TMUX_PREFIX:-$default_prefix}
   py="$HOME/miniconda3/envs/rdagent/bin/python"
   evo_py="$HOME/miniconda3/bin/python"
   export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
-  export OPENAI_COMPATIBLE_MODEL=deepseek-v4.1-flash-1017/huoshan_L/sfc
   export TARGET_OPENAI_COMPATIBLE_MAX_TOKENS=131072 OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS=131072
   export SKILLOPT_WORKERS=12 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
   export EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1/embeddings EMBEDDING_MODEL=BAAI/bge-m3
@@ -714,6 +716,8 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
     suffix=-attempt2
     test -d "$batch"
   fi
+  directory_suffix=$suffix
+  if [[ "$mode" == all ]]; then directory_suffix="_${model_tag}_${stamp}"; fi
   command -v tmux >/dev/null
   command -v opencode >/dev/null
   test -x "$py"
@@ -727,7 +731,7 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
       echo "Existing tmux session: $prefix-$bench-$method$suffix" >&2
       exit 1
     fi
-    test ! -e "$batch/$bench/$method$suffix"
+    test ! -e "$batch/$bench/$method$directory_suffix"
     if [[ "$mode" == lite-retry ]]; then
       test -s "$batch/$bench/$method/exit.code"
       test "$(cat "$batch/$bench/$method/exit.code")" != 0
@@ -745,7 +749,7 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
     repo="$base/${repos[$method]}"
     session="$prefix-$bench-$method$suffix"
     split="$base/SkillOpt/data/${bench}_split"
-    export FULL12_OUT="$batch/$bench/$method$suffix" FULL12_REV="${revs[$method]}"
+    export FULL12_OUT="$batch/$bench/$method$directory_suffix" FULL12_REV="${revs[$method]}"
     mkdir -p "$batch/$bench"
     mkdir "$FULL12_OUT"
     if [[ "$method" != skillgen ]]; then unset EMBEDDING_API_KEY; fi
@@ -801,7 +805,9 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 )
 ```
 
-结果位于 `$HOME/fixed-benchmark-runs/<批次>/<bench>/<method>/`。每组的启动时间、实际参数和输出保存在 `started.at` 与 `console.log` 中，结束后查看 `exit.code` 及对应 test 汇总。查看某组可运行 `tmux -L full12all-bird-evoskill attach -t full12all-bird-evoskill`。
+新完整批次的路径为 `$HOME/fixed-benchmark-runs/full-w12_<模型>_<YYYYMMDD_HHMMSS>/<bench>/<method>_<模型>_<YYYYMMDD_HHMMSS>/`，12 组共用一次生成的批次时间戳。每组实际启动时间见 `started.at`，完整模型名与参数见 `console.log`。结束后查看 `exit.code` 和 test 汇总。连接会话时使用启动输出中的名称：`tmux -L "$session" attach -t "$session"`。
+
+已启动批次（2026-11-25 00:26:51，北京时间）使用提交 `93a2d24` 的命令，模型为 `deepseek-v4.1-flash-1017/huoshan_L/sfc`。该批现有路径为 `/mnt/sdd3/xuancheng/fixed-benchmark-runs/full-w12-all-r1/<bench>/<method>/`，会话前缀为 `full12all`。
 
 并行批次首次调度使用提交 `d34d2ee` 的启动命令。三组 Lite 首次尝试在首轮 dev 前退出，原始日志保存在 `<bench>/skillopt-lite/`。补跑时在原批次的 CPU shell 设置 `export FULL12_MODE=lite-retry`，仅提供 TokenHub key，然后执行上面完整的启动块。三组修复版 Lite 立即并行，使用 `<bench>/skillopt-lite-attempt2/` 和同名后缀的 tmux；修复版 `8c37ea3` 在各自 host 中准备初始 skill 和只含 Git 跟踪源码的阶段运行文件，先执行原版初始 dev、最佳快照和 seed=1 的首批 train，然后由 OpenCode 接续三轮优化。成功以完整逐题 test、汇总文件和退出码共同确认。复现十组全新运行时使用 `FULL12_MODE=ten`、新的批次和会话前缀。
 
