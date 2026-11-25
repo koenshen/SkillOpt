@@ -896,13 +896,13 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 
 ### 四个 baseline 的第 2、3 次重复运行（批次 `20261125_043046`）
 
-本批次使用 `deepseek-v4.1-flash-1017/huoshan_L/sfc`，每组答题并发 12。下表列出 CPU 上保留的 29 个运行目录及 3 个缺项。部分作业在登记时仍在运行，完成情况以各目录的退出码、最终 test 汇总和实测题数为准。
+本批次使用 `deepseek-v4.1-flash-1017/huoshan_L/sfc`，每组答题并发 12。下表列出全部 32 组已完成运行在 CPU 上的绝对路径。SearchQA 第 2 次、BIRD 第 2 和第 3 次的 SkillOpt-Lite 补跑目录使用时间戳 `20261125_045615`。
 
 | Benchmark | 方法 | 第几次运行 | CPU 上的绝对路径 |
 |---|---|---:|---|
 | SearchQA | SkillGen | 2 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
 | SearchQA | SkillGen | 3 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
-| SearchQA | SkillOpt-Lite | 2 | 缺失（作业提前退出，未生成最终 test 汇总） |
+| SearchQA | SkillOpt-Lite | 2 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_045615/` |
 | SearchQA | SkillOpt-Lite | 3 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite-attempt3_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043318/` |
 | SearchQA | SkillLens | 2 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
 | SearchQA | SkillLens | 3 | `/mnt/sdd3/xuancheng/searchqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
@@ -926,9 +926,57 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 | HotpotQA | EvoSkill | 3 | `/mnt/sdd3/xuancheng/hotpotqa-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
 | BIRD | SkillGen | 2 | `/mnt/sdd3/xuancheng/bird-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
 | BIRD | SkillGen | 3 | `/mnt/sdd3/xuancheng/bird-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillgen_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
-| BIRD | SkillOpt-Lite | 2 | 缺失（作业提前退出，未生成最终 test 汇总） |
-| BIRD | SkillOpt-Lite | 3 | 缺失（作业提前退出，未生成最终 test 汇总） |
+| BIRD | SkillOpt-Lite | 2 | `/mnt/sdd3/xuancheng/bird-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_045615/` |
+| BIRD | SkillOpt-Lite | 3 | `/mnt/sdd3/xuancheng/bird-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skillopt-lite_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_045615/` |
 | BIRD | SkillLens | 2 | `/mnt/sdd3/xuancheng/bird-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
 | BIRD | SkillLens | 3 | `/mnt/sdd3/xuancheng/bird-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/skilllens_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
 | BIRD | EvoSkill | 2 | `/mnt/sdd3/xuancheng/bird-original-runs/rep2-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
 | BIRD | EvoSkill | 3 | `/mnt/sdd3/xuancheng/bird-original-runs/rep3-w12_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/evoskill_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261125_043046/` |
+
+## 四个 baseline 在四个 benchmark 上的三次完整运行
+
+成本为训练＋dev 的 LLM tokens，排除 test 和 embedding。精度含所有固定 test 题。SD 为三次运行的样本标准差（n−1）。两列提升均以百分点表示，用未舍入的精度计算。SkillOpt 使用唯一一次完整训练的前测作固定参考，SkillGen 先按运行编号减去同次前测，再取三次差值的平均。SearchQA 首次运行的答题并发为 24，后两次为 12，其余三个 benchmark 为每组 12。
+
+### SearchQA（1,400 题，EM）
+
+| 方法 | 第 1 次 tokens / 精度 | 第 2 次 tokens / 精度 | 第 3 次 tokens / 精度 | tokens 均值 ± SD | 精度均值 ± SD（%） | 较 SkillOpt 前测 | 较 SkillGen 前测 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SkillOpt（训练前） | 0 / 74.79% | — | — | 0 | 74.79（1 次） | 0.00 | +7.86 |
+| SkillGen（训练前） | 0 / 65.36% | 0 / 67.93% | 0 / 67.50% | 0 | 66.93 ± 1.38 | −7.86 | 0.00 |
+| SkillGen | 2,518,901 / 78.86% | 2,503,545 / 80.21% | 2,523,676 / 79.86% | 2,515,374 ± 10,519 | 79.64 ± 0.70 | +4.86 | +12.71 |
+| SkillOpt-Lite | 2,148,941 / 80.79% | 2,987,216 / 81.71% | 2,273,981 / 80.93% | 2,470,046 ± 452,225 | **81.14 ± 0.50** | +6.36 | +14.21 |
+| SkillLens | 2,472,492 / 79.86% | 2,335,085 / 79.71% | 2,335,787 / 80.71% | **2,381,121 ± 79,130** | 80.10 ± 0.54 | +5.31 | +13.17 |
+| EvoSkill | 7,010,456 / 82.14% | 6,220,302 / 75.93% | 6,662,135 / 80.79% | 6,630,964 ± 395,998 | 79.62 ± 3.27 | +4.83 | +12.69 |
+
+### TriviaQA（1,000 题，EM）
+
+| 方法 | 第 1 次 tokens / 精度 | 第 2 次 tokens / 精度 | 第 3 次 tokens / 精度 | tokens 均值 ± SD | 精度均值 ± SD（%） | 较 SkillOpt 前测 | 较 SkillGen 前测 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SkillOpt（训练前） | 0 / 82.40% | — | — | 0 | 82.40（1 次） | 0.00 | +10.67 |
+| SkillGen（训练前） | 0 / 72.00% | 0 / 70.50% | 0 / 72.70% | 0 | 71.73 ± 1.12 | −10.67 | 0.00 |
+| SkillGen | 6,150,489 / 85.40% | 6,190,215 / 81.00% | 6,182,474 / 86.20% | 6,174,393 ± 21,060 | 84.20 ± 2.80 | +1.80 | +12.47 |
+| SkillOpt-Lite | 2,323,971 / 89.50% | 2,426,014 / 88.80% | 2,228,699 / 89.80% | **2,326,228 ± 98,677** | **89.37 ± 0.51** | +6.97 | +17.63 |
+| SkillLens | 7,689,963 / 84.40% | 7,725,557 / 85.20% | 7,897,892 / 86.00% | 7,771,137 ± 111,206 | 85.20 ± 0.80 | +2.80 | +13.47 |
+| EvoSkill | 15,600,116 / 88.50% | 15,667,077 / 88.40% | 19,915,305 / 89.10% | 17,060,833 ± 2,472,272 | 88.67 ± 0.38 | +6.27 | +16.93 |
+
+### HotpotQA（1,000 题，EM）
+
+| 方法 | 第 1 次 tokens / 精度 | 第 2 次 tokens / 精度 | 第 3 次 tokens / 精度 | tokens 均值 ± SD | 精度均值 ± SD（%） | 较 SkillOpt 前测 | 较 SkillGen 前测 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SkillOpt（训练前） | 0 / 61.50% | — | — | 0 | 61.50（1 次） | 0.00 | +14.13 |
+| SkillGen（训练前） | 0 / 47.70% | 0 / 47.00% | 0 / 47.40% | 0 | 47.37 ± 0.35 | −14.13 | 0.00 |
+| SkillGen | 8,080,727 / 63.90% | 7,965,777 / 65.00% | 7,949,889 / 65.70% | 7,998,798 ± 71,396 | 64.87 ± 0.91 | +3.37 | +17.50 |
+| SkillOpt-Lite | 2,672,117 / 68.20% | 2,766,336 / 67.00% | 2,488,183 / 67.00% | **2,642,212 ± 141,467** | **67.40 ± 0.69** | +5.90 | +20.03 |
+| SkillLens | 9,970,401 / 64.50% | 10,053,901 / 62.70% | 10,187,612 / 62.70% | 10,070,638 ± 109,568 | 63.30 ± 1.04 | +1.80 | +15.93 |
+| EvoSkill | 12,915,802 / 66.40% | 12,169,812 / 66.40% | 14,382,661 / 68.70% | 13,156,092 ± 1,125,824 | 67.17 ± 1.33 | +5.67 | +19.80 |
+
+### BIRD（500 题，EX）
+
+| 方法 | 第 1 次 tokens / 精度 | 第 2 次 tokens / 精度 | 第 3 次 tokens / 精度 | tokens 均值 ± SD | 精度均值 ± SD（%） | 较 SkillOpt 前测 | 较 SkillGen 前测 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| SkillOpt（训练前） | 0 / 69.00% | — | — | 0 | 69.00（1 次） | 0.00 | +1.60 |
+| SkillGen（训练前） | 0 / 67.00% | 0 / 68.40% | 0 / 66.80% | 0 | 67.40 ± 0.87 | −1.60 | 0.00 |
+| SkillGen | 17,822,881 / 67.20% | 14,017,967 / 70.00% | 14,310,759 / 67.80% | 15,383,869 ± 2,117,313 | **68.33 ± 1.47** | −0.67 | +0.93 |
+| SkillOpt-Lite | 5,245,074 / 67.80% | 4,535,358 / 69.20% | 4,663,199 / 67.80% | **4,814,544 ± 378,290** | 68.27 ± 0.81 | −0.73 | +0.87 |
+| SkillLens | 8,809,111 / 67.20% | 8,768,319 / 68.40% | 8,838,017 / 68.40% | 8,805,149 ± 35,018 | 68.00 ± 0.69 | −1.00 | +0.60 |
+| EvoSkill | 9,118,459 / 65.20% | 10,590,778 / 65.20% | 14,141,648 / 68.80% | 11,283,628 ± 2,582,274 | 66.40 ± 2.08 | −2.60 | −1.00 |
