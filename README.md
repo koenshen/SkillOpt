@@ -980,3 +980,96 @@ read -rsp 'SiliconFlow embedding key: ' EMBEDDING_API_KEY; echo; export EMBEDDIN
 | SkillOpt-Lite | 5,245,074 / 67.80% | 4,535,358 / 69.20% | 4,663,199 / 67.80% | **4,814,544 ± 378,290** | 68.27 ± 0.81 | −0.73 | +0.87 |
 | SkillLens | 8,809,111 / 67.20% | 8,768,319 / 68.40% | 8,838,017 / 68.40% | 8,805,149 ± 35,018 | 68.00 ± 0.69 | −1.00 | +0.60 |
 | EvoSkill | 9,118,459 / 65.20% | 10,590,778 / 65.20% | 14,141,648 / 68.80% | 11,283,628 ± 2,582,274 | 66.40 ± 2.08 | −2.60 | −1.00 |
+
+## SkillOpt 第 2 轮复现命令（CPU 批次 `20261126_080455`）
+
+2026-11-26 在 CPU 上以提交 `595285dde10ece3842a342179d6449de337b175c` 启动了 16 个独立 tmux。SearchQA、TriviaQA、HotpotQA 和 BIRD 各跑四组：完整训练、温和早停、温和＋激进 ρ=0.75、温和＋激进 ρ=0.50。每组从对应 benchmark 的初始 skill 和 CPU 上已有的固定 split 开始，使用同一模型做优化和答题。每组答题并发 24，温和早停的 dev 批大小为 4。两个角色的 `131072` 均为输出 token 上限，实际请求还受调用处的输出预算约束。
+
+在本地运行 `ssh cpu`，然后在 CPU 的 Bash 中执行下面的命令块。代码使用本批次的 Python 环境、配置文件和训练参数；再次执行时自动生成新的北京时间戳，在首轮结果的同级目录创建新结果。清单最后一列是对应首轮目录名，用于在日志中记录来源。
+
+```bash
+(
+  set -euo pipefail
+  umask 077
+  repo=/mnt/sdd3/xuancheng/code/github/SkillOpt
+  cd "$repo"
+  reference_rev=595285dde10ece3842a342179d6449de337b175c
+  git diff --quiet "$reference_rev" -- scripts skillopt configs
+  revision=$(git rev-parse HEAD)
+  py="$repo/.venv/bin/python"
+  test -x "$py"
+  command -v tmux >/dev/null
+
+  if [[ -z ${OPENAI_COMPATIBLE_API_KEY:-} ]]; then
+    read -rsp 'TokenHub API key: ' OPENAI_COMPATIBLE_API_KEY
+    echo
+  fi
+  : "${OPENAI_COMPATIBLE_API_KEY:?TokenHub API key required}"
+  export OPENAI_COMPATIBLE_API_KEY
+  # 与原批次相同，清除按角色设置的旧覆盖值，再设置两个角色的输出上限。
+  for key in ${!OPTIMIZER_OPENAI_COMPATIBLE_@} ${!TARGET_OPENAI_COMPATIBLE_@}; do
+    unset "$key"
+  done
+  export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
+  export OPENAI_COMPATIBLE_MODEL=deepseek-v4.1-flash-1017/huoshan_L/sfc
+  export OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+  export TARGET_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+  export SKILLOPT_WORKERS=24 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+  stamp=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)
+  tag=${OPENAI_COMPATIBLE_MODEL//\//-}
+
+  while read -r bench arm first_dir; do
+    session="so2-$stamp-$bench-$arm"
+    out="$repo/outputs/skillopt_${bench}_${tag}_${stamp}_rep2_${arm}"
+    args=("$py" -B -u scripts/train.py --config "configs/$bench/default.yaml"
+          --cfg-options env.workers=24 env.max_completion_tokens=131072
+          model.backend=openai_compatible model.optimizer_backend=openai_compatible
+          model.target_backend=openai_compatible "model.optimizer=$OPENAI_COMPATIBLE_MODEL"
+          "model.target=$OPENAI_COMPATIBLE_MODEL" "env.out_root=$out")
+    if [[ $arm != fullval ]]; then
+      args+=(evaluation.selection_early_stop=true evaluation.selection_early_stop_batch=4)
+    fi
+    case "$arm" in
+      agg_b4_rho075) args+=(evaluation.train_early_stop=true evaluation.train_early_stop_rho=0.75) ;;
+      agg_b4_rho050) args+=(evaluation.train_early_stop=true evaluation.train_early_stop_rho=0.5) ;;
+    esac
+    if [[ $bench == searchqa && $arm == agg_b4_rho075 ]]; then
+      args+=(env.eval-ignore-this=1)  # 保留该组首轮配置中的原字段
+    fi
+
+    mkdir "$out"  # 目录已存在时退出，保留既有结果
+    export RUN_DIR="$out" FIRST_RUN="$repo/outputs/$first_dir" REVISION="$revision"
+    tmux -L "$session" -f /dev/null new-session -d -s "$session" -c "$repo" bash -c '
+      set -eu
+      umask 077
+      exec >>"$RUN_DIR/console.log" 2>&1
+      finish() { rc=$?; printf "%s\n" "$rc" > "$RUN_DIR/exit.code"; date -Is > "$RUN_DIR/finished.at"; }
+      trap finish EXIT
+      date -Is | tee "$RUN_DIR/started.at"
+      printf "first_run=%s\nrevision=%s\nworkers=%s\n" "$FIRST_RUN" "$REVISION" "$SKILLOPT_WORKERS"
+      printf "argv:"; printf " %q" "$@"; printf "\n"
+      "$@"
+    ' _ "${args[@]}"
+    printf '%s -> %s\n' "$session" "$out"
+  done <<'RUNS'
+searchqa fullval skillopt_searchqa_deepseek-v4-1-flash-huoshan-sfc_20261118_200115_fullval
+searchqa earlystop_b4 skillopt_searchqa_deepseek-v4-1-flash-huoshan-sfc_20261118_200115_earlystop_b4
+searchqa agg_b4_rho075 skillopt_searchqa_deepseek-v4.1-flash-1017_20261119_211735_agg_b4_rho075
+searchqa agg_b4_rho050 skillopt_searchqa_deepseek-v4.1-flash-1017L_20261120_002105_agg_b4_rho050
+triviaqa fullval skillopt_triviaqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_fullval
+triviaqa earlystop_b4 skillopt_triviaqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_earlystop_b4
+triviaqa agg_b4_rho075 skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+triviaqa agg_b4_rho050 skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050
+hotpotqa fullval skillopt_hotpotqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_fullval
+hotpotqa earlystop_b4 skillopt_hotpotqa_deepseek-v4-1-flash-huoshan-sfc_20261118_103658_earlystop_b4
+hotpotqa agg_b4_rho075 skillopt_hotpotqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+hotpotqa agg_b4_rho050 skillopt_hotpotqa_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050
+bird fullval skillopt_bird_deepseek-v4.1-flash-1017_20261118_073747_fullval
+bird earlystop_b4 skillopt_bird_deepseek-v4.1-flash-1017_20261118_200644_earlystop_b4
+bird agg_b4_rho075 skillopt_bird_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+bird agg_b4_rho050 skillopt_bird_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050
+RUNS
+)
+```
+
+原批次结果位于 `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/`。例如，SearchQA 完整训练的目录名为 `skillopt_searchqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_080455_rep2_fullval/`；对应会话可用 `tmux -L so2-20261126_080455-searchqa-fullval attach -t so2-20261126_080455-searchqa-fullval` 查看。各组的 `console.log` 保留实际 argv、首轮路径与代码版本，`config.json` 保留生效参数，`exit.code` 和 `summary.json` 用于核对完成状态。
