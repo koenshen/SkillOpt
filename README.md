@@ -1073,3 +1073,52 @@ RUNS
 ```
 
 原批次结果位于 `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/`。例如，SearchQA 完整训练的目录名为 `skillopt_searchqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_080455_rep2_fullval/`；对应会话可用 `tmux -L so2-20261126_080455-searchqa-fullval attach -t so2-20261126_080455-searchqa-fullval` 查看。各组的 `console.log` 保留实际 argv、首轮路径与代码版本，`config.json` 保留生效参数，`exit.code` 和 `summary.json` 用于核对完成状态。
+
+## TriviaQA 二次进化首轮运行（2026-11-26，北京时间）
+
+2026-11-26 17:09:26（UTC+8）在 CPU 启动两个并行 tmux 会话，使用代码提交 `dad88a8e00db060af2ce9bab84c26ff6320c6af2`。两组均于 17:09:27 创建结果目录。以下路径已在 CPU 上与各自的 `manifest.json` 核对。
+
+| 配置 / tmux 会话 | 第一阶段来源绝对路径 | 本次二次进化结果绝对路径 | 初始最佳 dev | 每个子代编辑预算 |
+|---|---|---|---:|---:|
+| `rho050` | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050` | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_170927_evo2_rho050` | 174/200 | 3 |
+| `rho075` | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075` | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_170927_evo2_rho075` | 178/200 | 2 |
+
+每组只读自己的首轮轨迹，在 200 道 dev 题上验证。每组初始 5 个个体，使用 `matrix` 选供体，种子 42，最多 3 代，连续 2 代无人替换即停。生成和答题均使用归档模型 `deepseek-v4.1-flash-1017/huoshan_L/sfc`，单次请求的输出上限均为 131072。归档 worker 数为 24；每组依次评估子代，dev 早停每批最多并行 4 题。
+
+在 Mac 上执行 `ssh cpu`，再在 CPU 的 Bash 中运行下面的命令即可复现。API key 在提示时输入。新运行会生成新的时间戳、会话和结果目录。
+
+```bash
+(
+set -eu
+umask 077
+cd /mnt/sdd3/xuancheng/code/github/SkillOpt
+git diff --quiet dad88a8e00db060af2ce9bab84c26ff6320c6af2 -- skillopt skillopt_evolution
+export OPENAI_COMPATIBLE_BASE_URL='https://tokenhub.sensetime.com/v1'
+export OPENAI_COMPATIBLE_MODEL='deepseek-v4.1-flash-1017/huoshan_L/sfc'
+export OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+export TARGET_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+export SKILLOPT_WORKERS=24
+unset OPTIMIZER_OPENAI_COMPATIBLE_BASE_URL TARGET_OPENAI_COMPATIBLE_BASE_URL
+unset OPTIMIZER_OPENAI_COMPATIBLE_API_KEY TARGET_OPENAI_COMPATIBLE_API_KEY
+read -rsp 'TokenHub API key: ' OPENAI_COMPATIBLE_API_KEY
+echo
+: "${OPENAI_COMPATIBLE_API_KEY:?TokenHub key required}"
+export OPENAI_COMPATIBLE_API_KEY
+source050=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_111321_agg_b4_rho050
+source075=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+stamp=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)
+sock="trivia-evo2-$stamp"
+for arm in rho050 rho075; do
+  case "$arm" in
+    rho050) src=$source050 ;;
+    rho075) src=$source075 ;;
+  esac
+  tmux -L "$sock" -f /dev/null new-session -d -s "$arm" -c "$PWD" \
+    "tmux set-window-option remain-on-exit on && exec .venv/bin/python -B -u -m skillopt_evolution.run --source '$src' --strategy matrix --generations 3 --patience 2 --seed 42"
+done
+echo "tmux socket=$sock"
+tmux -L "$sock" list-sessions
+)
+```
+
+本次会话可用 `tmux -L trivia-evo2-20261126_170926 attach -t rho050` 或 `-t rho075` 查看。各结果目录的 `generations/` 保存供体、编辑及逐批 dev 记录；`summary.json` 的 `incremental_usage` 按生成和验证列出输入、输出与总 token。中断后可以用 `.venv/bin/python -u -m skillopt_evolution.run --resume <本次二次进化结果绝对路径>` 续跑。
