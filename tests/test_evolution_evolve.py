@@ -80,13 +80,15 @@ class EvolutionDonorTests(unittest.TestCase):
         wrong["sources"][0]["edit_index"] = 2
         with tempfile.TemporaryDirectory() as folder:
             args = dict(parent=self.x, best=self.best, donor_a=self.a, donor_b=self.b,
-                        selection=s, out_dir=Path(folder))
+                        selection=s, out_dir=Path(folder), max_completion_tokens=131072)
             with patch.object(evolve, "chat_optimizer", side_effect=[
                 (json.dumps(wrong), {}), (json.dumps(response), {}),
             ]) as optimizer:
                 result = evolve.generate_offspring(**args)
                 resumed = evolve.generate_offspring(**args)
             self.assertEqual(optimizer.call_count, 2)
+            self.assertEqual([call.kwargs["max_completion_tokens"] for call in optimizer.call_args_list],
+                             [131072, 131072])
             self.assertEqual(result, resumed)
             self.assertEqual(result["edits"][0]["status"], "applied_append")
             self.assertEqual(result["status"], "generated")

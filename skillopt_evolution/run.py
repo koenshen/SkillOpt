@@ -124,7 +124,8 @@ def run_loop(*, archive, items, adapter, out, options):
                 proposal = generate_offspring(
                     parent=parent, best=best, donor_a=by_id[plan["donor_a"]],
                     donor_b=by_id[plan["donor_b"]], selection=plan, out_dir=work,
-                    edit_budget=options["edit_budget"], reserved_hashes=reserved,
+                    edit_budget=options["edit_budget"], max_completion_tokens=adapter.max_completion_tokens,
+                    reserved_hashes=reserved,
                     previous_mutations=[p["mutation"] for p in proposals if p["status"] == "generated"])
             else:
                 proposal = {"status": "skipped", "reason": plan["reason"]}

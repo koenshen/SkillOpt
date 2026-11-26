@@ -218,8 +218,8 @@ def _proposal(raw, parent, donors, selection, edit_budget):
             "hoped_for": doc["hoped_for"], "at_risk": doc["at_risk"]}
 
 
-def generate_offspring(*, parent, best, donor_a, donor_b, selection, out_dir, edit_budget=2,
-                       max_completion_tokens=16384, reserved_hashes=(), previous_mutations=()):
+def generate_offspring(*, parent, best, donor_a, donor_b, selection, out_dir, max_completion_tokens,
+                       edit_budget=2, reserved_hashes=(), previous_mutations=()):
     """Journal every call and validate provenance before handing a child to the scorer."""
     if selection["status"] != "selected":
         return {"status": "skipped", "reason": selection["reason"]}

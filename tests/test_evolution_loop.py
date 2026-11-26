@@ -9,6 +9,8 @@ from skillopt_evolution import evolve, run, usage
 
 
 class LocalModels:
+    max_completion_tokens = 131072
+
     def __init__(self):
         self.optimizer_calls = 0
         self.evaluated_items = 0
@@ -94,6 +96,8 @@ class EvolutionLoopTests(unittest.TestCase):
             blocks = [event for event, prev in zip(models.events, [None, *models.events]) if event != prev]
             self.assertEqual(blocks, ["generate", "validate"] * 3)
             self.assertEqual(models.optimizer_calls, 6)
+            for request in out.glob("generations/*/slot_*/generation_attempts/*/request.json"):
+                self.assertEqual(usage.read_json(request)["max_completion_tokens"], models.max_completion_tokens)
             costs = summary["incremental_usage"]
             self.assertEqual(costs["generation"]["input_tokens"], 6 * 12)
             self.assertEqual(costs["generation"]["output_tokens"], 6 * 3)
