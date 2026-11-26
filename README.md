@@ -1122,3 +1122,21 @@ tmux -L "$sock" list-sessions
 ```
 
 本次会话可用 `tmux -L trivia-evo2-20261126_170926 attach -t rho050` 或 `-t rho075` 查看。各结果目录的 `generations/` 保存供体、编辑及逐批 dev 记录；`summary.json` 的 `incremental_usage` 按生成和验证列出输入、输出与总 token。中断后可以用 `.venv/bin/python -u -m skillopt_evolution.run --resume <本次二次进化结果绝对路径>` 续跑。
+
+### 同批 TriviaQA 的自动 test 评测（2026-11-26，北京时间）
+
+当前这两个已有运行各自使用独立的收尾进程，等待对应的 `summary.json` 标记为 complete，核对并冻结二次进化选定的 skill，然后使用该运行的答题模型、131072 输出上限和 24 个 workers 跑固定 1,000 道 test。即使最终 skill 与第一阶段相同，也进行一次新推理。每组结果在上表对应的结果目录下的 `test/`，可查看 `status.json`、`manifest.json`、逐题 `results.jsonl` 和最终 `summary.json`（EM、F1、失败数、单独的 test 输入/输出 token 及相对第一阶段的变化）。
+
+在 CPU 仓库根目录，这批任务的挂接命令如下。已有 tmux 服务端继承了本批的模型凭据。更换服务器或新开 shell 时需设置同一服务的 URL 和 key。
+
+```bash
+cd /mnt/sdd3/xuancheng/code/github/SkillOpt
+sock=trivia-evo2-20261126_170926
+for arm in rho050 rho075; do
+  dir="$PWD/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_170927_evo2_$arm"
+  tmux -L "$sock" new-session -d -s "test-$arm" -c "$PWD" \
+    "tmux set-window-option remain-on-exit on && exec .venv/bin/python -B -u -m scripts.evolution_test.run --evolution-dir '$dir'"
+done
+```
+
+今后新建一组 TriviaQA 运行，使用 `.venv/bin/python -u -m scripts.evolution_test.pipeline --source <第一阶段目录> --strategy matrix`，进化进程正常结束后自动评估该次运行的最终 skill。若 test 被中断，可单独用 `.venv/bin/python -u -m scripts.evolution_test.run --evolution-dir <该次二次进化目录>` 续评；已经成功作答的题直接复用。
