@@ -78,7 +78,7 @@ Issues = "https://github.com/microsoft/SkillOpt/issues"
 # skillopt*      = the research package
 # skillopt_sleep = the open-source Sleep tool (decoupled, zero research dep)
 # skillopt_webui = the Gradio dashboard (installed via the `webui` extra)
-include = ["skillopt", "skillopt.*", "skillopt_sleep", "skillopt_sleep.*", "skillopt_webui", "skillopt_webui.*", "scripts*"]
+include = ["skillopt", "skillopt.*", "skillopt_evolution", "skillopt_sleep", "skillopt_sleep.*", "skillopt_webui", "skillopt_webui.*", "scripts*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.md"]
