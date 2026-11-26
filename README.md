@@ -1152,3 +1152,22 @@ cd /mnt/sdd3/xuancheng/code/github/SkillOpt
 prior=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_170927_evo2_rho075
 .venv/bin/python -B -u -m skillopt_evolution.replay_prompt --prior-run "$prior"
 ```
+
+上述固定供体对照已按要求停止，保留已有日志。下一组从第一阶段独立启动完整的第二阶段。
+
+### TriviaQA 新提示词完整二次进化，p=0.75（2026-11-26，北京时间）
+
+18:09:51 在 CPU 通过以下命令启动，运行提交为 `d8fc4c263954a30645faf02c38b85ce55ecd3211`。复用首轮 120 步历史，五个初始个体的 dev 正确数分别为 178、177、176、176、175（共 200 题）。每代重新选供体，子代胜过父本即可进入下一代。最多 3 代，连续 2 代无人替换则提前结束。进化正常结束后，pipeline 自动用最终 dev best 评测 1,000 道固定 test 题。
+
+- 第一阶段来源：`/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075`
+- 第二阶段实际结果：`/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_180954_evo2_rho075`。其中 `summary.json` 记录 dev 结果和进化成本，`test/summary.json` 记录最终 test EM、F1 和推理成本。
+- tmux socket 为 `trivia-evo2-20261126_170926`，会话为 `full-newprompt-rho075-20261126_180951`，继承已有模型环境。
+
+```bash
+cd /mnt/sdd3/xuancheng/code/github/SkillOpt
+source075=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+sock=trivia-evo2-20261126_170926
+session="full-newprompt-rho075-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
+tmux -L "$sock" new-session -d -s "$session" -c "$PWD" \
+  "umask 077; tmux set-window-option remain-on-exit on && exec .venv/bin/python -B -u -m scripts.evolution_test.pipeline --source '$source075' --strategy matrix --generations 3 --patience 2 --seed 42"
+```
