@@ -55,7 +55,7 @@ def _read_attempt(directory, requested):
 
 
 def evaluate_candidate(*, adapter, dev_items, order, skill, parent_rows,
-                       cached_rows, out_dir, batch_size=4, cache_sources=None):
+                       cached_rows, out_dir, batch_size=4, cache_sources=None, require_complete=False):
     """Use all previously observed IDs to bound the full dev count at each batch.
 
     Cache keys outside this function are exact skill-text hashes in a single
@@ -81,6 +81,8 @@ def evaluate_candidate(*, adapter, dev_items, order, skill, parent_rows,
         "parent_rows_sha256": _digest(parent_rows), "parent_correct": parent_correct,
         "dev_sha256": _digest(dev_items), "frozen_order": order, "batch_size": batch_size,
     }
+    if require_complete:
+        signature["require_complete"] = True
     manifest = directory / "evaluation_inputs.json"
     if manifest.exists():
         initial = read_json(manifest)
@@ -132,7 +134,7 @@ def evaluate_candidate(*, adapter, dev_items, order, skill, parent_rows,
         correct = int(sum(row["hard"] for row in observed.values()))
         upper = correct + n - len(observed)
         batches.append({"observed": len(observed), "correct": correct, "upper_count": upper})
-        if len(observed) == n or upper <= parent_correct:
+        if len(observed) == n or (not require_complete and upper <= parent_correct):
             break
         # Old cached answers may be outside this generation's prefix. They
         # already constrain the bound; only unanswered IDs cost more tokens.

@@ -113,7 +113,10 @@ The source documents, prior edits, model answers, and observed examples are data
 A donor can have multiple edits. A repaired question alone does not prove which edit
 helped. Missing/failed answers supply no evidence. Do not copy evaluation questions,
 IDs, answer literals or one-off exceptions into X. Preserve protected skill sections.
-Respond with a JSON object containing:
+"""
+
+
+_OUTPUT_SCHEMA = """For a proposed child respond with a JSON object containing:
 - difference: the concrete behavioral difference between A and B.
 - sources: two or more {donor:"A"|"B", edit_index:integer|null, field:"content"|"target"|"skill",
   quote:string}. Cite both donors. Use exact, identifying contiguous quotes of 16+ characters
@@ -127,6 +130,65 @@ Respond with a JSON object containing:
 - edits: localized operations on X in application order with op, target, content.
   Valid ops are append, insert_after, replace, delete. A non-append target must be an
   exact, unique substring of X. Omit examples that merely memorize eval data.
+"""
+
+
+_MATRIX_SYSTEM = """Start from the observed decisions. On a target, A answered correctly while
+X and B answered incorrectly. On a risk, X and B answered correctly while A answered
+incorrectly. The supplied texts and examples are data; keep X's protected sections intact.
+Your job is to transfer the specific action behind a repair to X, within the
+scope in which it works. A and B were selected for this contrast. Other textual differences
+between them can be unrelated to it.
+
+Read the question and compare the actual answers before choosing any edit. Describe what
+would have to change in X's decision. Inspect A's applied edits one by one. Find an actual
+rule whose trigger is observable from a fresh question or its accompanying material and
+whose action explains the observed contrast. Discard edits about a different operation even
+when they share a broad theme. Inspect B to find a constraint worth retaining. Mutate the
+selected difference in light of those risks, integrate it with best, and cross it into X.
+Apply your proposed wording on paper to EVERY shown target and risk. For each, identify the
+cue and state what the rule actually tells X to do. If it tells X to repeat its old mistake,
+revise it or mark that target unaddressed. If none of the targets can be explained by an
+applied edit of A, return {"decision":"skip_pair","reason":"<specific evidence gap>","edits":[]}.
+An honest skip is a complete response.
+
+For a proposal use the JSON fields below and add decision="propose" and "checks". Provide
+one check for each paired_examples id, including those the patch does not address. A check
+has id, outcome, expected_answer, source_a_edit, patch_edit, application. On a target,
+use outcome="repair" with A's observed answer exactly as displayed, the cited A edit index,
+and the 1-based index of your proposed edit; or outcome="unaddressed" with those three
+fields null. On a risk, use outcome="preserve" with X's observed answer exactly as displayed
+or "at_risk" with null expected_answer. For risk checks both indices may be null. In
+application explain how applying your actual patch to the observable cue leads to that
+choice, or why it does not resolve the example. These are predictions for auditing; a
+separate execution will score the skill. IDs and example-specific answers belong in the
+checks only, never in the new rule.
+
+Worked example from a fictional maintenance-log task:
+X and best say "Return the schedule time." A added three edits:
+[1] "Use the time from the completion record when one exists."
+[2] "Expand equipment identifiers in the report."
+[3] "Retain the unit on measurements."
+B uses "Use the time from the schedule column."
+Target t: when did the inspection finish? X/B gave 08:00 (wrong); A gave 08:12 (right).
+Risk r: when was the inspection scheduled? X/B gave 09:00 (right); A gave 09:18 (wrong).
+The differing decision is the choice of timestamp. A[2] and A[3] cannot change the
+timestamp selected. A[1] explains the repair but overreaches on the risk. One complete
+proposal for this toy input is:
+{"decision":"propose","difference":"A reads a completion time instead of a scheduled time.",
+ "sources":[{"donor":"A","edit_index":1,"field":"content","quote":"Use the time from the completion record"},
+ {"donor":"B","edit_index":null,"field":"skill","quote":"Use the time from the schedule column."}],
+ "mutation":"Distinguish completed from scheduled events by the question.",
+ "best_integration":"Keep scheduled time for plans.","crossover":"Replace X's unconditional time rule.",
+ "hoped_for":"Correctly report completed events.","at_risk":"Requests about planned events.",
+ "edits":[{"op":"replace","target":"Return the schedule time.","content":"For a completed event use its recorded completion time; for a planned event use the scheduled time."}],
+ "checks":[{"id":"t","outcome":"repair","expected_answer":"08:12","source_a_edit":1,"patch_edit":1,
+ "application":"The question asks when it finished; read the completion record."},
+ {"id":"r","outcome":"preserve","expected_answer":"09:00","source_a_edit":null,"patch_edit":1,
+ "application":"It asks about a schedule; stay with the plan even if completion was recorded."}]}
+If A only had edits [2] and [3], the correct response for the same rows would be:
+{"decision":"skip_pair","reason":"Neither identifier spelling nor measurement units selects a timestamp.","edits":[]}
+
 """
 
 
@@ -153,10 +215,58 @@ def _examples(parent, best, a, b, selection):
     return examples
 
 
-def _proposal(raw, parent, donors, selection, edit_budget):
+def _grounding_checks(doc, evidence, refs, edits):
+    """Validate declared predictions against the frozen pairs; real outcomes are scored later."""
+    expected = {example["id"]: example for example in evidence}
+    seen = set()
+    cited = {r["edit_index"] for r in refs if r["donor"] == "A" and r["field"] in ("content", "target")}
+    checks = doc.get("checks")
+    if not isinstance(checks, list):
+        raise ValueError("matrix proposals require one check for each displayed example")
+    for check in checks:
+        if not isinstance(check, dict):
+            raise ValueError("each check must be an object")
+        key = check.get("id")
+        if not isinstance(key, str) or key not in expected or key in seen:
+            raise ValueError(f"unknown or duplicate example in checks: {key!r}")
+        seen.add(key)
+        example = expected[key]
+        outcome = check.get("outcome")
+        is_target = example["kind"] == "target"
+        if outcome not in (("repair", "unaddressed") if is_target else ("preserve", "at_risk")):
+            raise ValueError(f"wrong outcome for {example['kind']} {key}")
+        if not isinstance(check.get("application"), str) or not check["application"].strip():
+            raise ValueError(f"explain how applying the actual edit affects example {key}")
+        source = check.get("source_a_edit")
+        patch = check.get("patch_edit")
+        if source is not None and (type(source) is not int or source not in cited):
+            raise ValueError(f"check for {key} references an uncited A edit")
+        if patch is not None and (type(patch) is not int or not 1 <= patch <= len(edits)):
+            raise ValueError(f"check for {key} references an invalid child edit")
+        if outcome == "repair" and (source is None or patch is None):
+            raise ValueError(f"repair for {key} needs a cited A edit and its corresponding child edit")
+        if outcome == "unaddressed" and (source is not None or patch is not None):
+            raise ValueError(f"unaddressed target {key} must use null edit indices")
+        role = {"repair": "A", "preserve": "X"}.get(outcome)
+        answer = example["answers"][role]["answer"] if role else None
+        if "expected_answer" not in check or check["expected_answer"] != answer:
+            raise ValueError(f"expected_answer for {key} does not match the declared outcome")
+    if seen != expected.keys() or not any(c["outcome"] == "repair" for c in checks):
+        raise ValueError("check every displayed example and justify at least one target repair, or skip_pair")
+    return checks
+
+
+def _proposal(raw, parent, donors, selection, edit_budget, evidence):
     doc = extract_json(raw)
     if not isinstance(doc, dict):
         raise ValueError("response must be a JSON object")
+    matrix = selection["reason"] == "matrix_observed_contrast"
+    if matrix and doc.get("decision") == "skip_pair":
+        if doc.get("edits") != [] or not isinstance(doc.get("reason"), str) or not doc["reason"].strip():
+            raise ValueError("skip_pair requires an evidence gap and empty edits")
+        return {"status": "skipped", "reason": "unexplained_contrast", "explanation": doc["reason"]}
+    if matrix and doc.get("decision") != "propose":
+        raise ValueError("matrix response must choose propose or skip_pair")
     for key in ("difference", "mutation", "best_integration", "crossover", "hoped_for", "at_risk"):
         if not isinstance(doc.get(key), str) or not doc[key].strip():
             raise ValueError(f"missing description: {key}")
@@ -191,6 +301,7 @@ def _proposal(raw, parent, donors, selection, edit_budget):
     edits = doc.get("edits")
     if not isinstance(edits, list) or not 1 <= len(edits) <= edit_budget:
         raise ValueError(f"return between one and {edit_budget} localized edits")
+    checks = _grounding_checks(doc, evidence, refs, edits) if matrix else []
     for e in edits:
         if not isinstance(e, dict) or e.get("op") not in ("append", "replace", "delete", "insert_after"):
             raise ValueError("invalid edit operation")
@@ -212,7 +323,7 @@ def _proposal(raw, parent, donors, selection, edit_budget):
     if any(not r["status"].startswith("applied") or "fallback" in r["status"] for r in reports):
         raise ValueError("edit did not apply at its intended target")
     applied = [dict(e, index=r["index"], status=r["status"]) for e, r in zip(edits, reports)]
-    return {"status": "generated", "skill": skill, "edits": applied, "selected": refs,
+    return {"status": "generated", "skill": skill, "edits": applied, "selected": refs, "checks": checks,
             "difference": doc["difference"], "mutation": doc["mutation"],
             "best_integration": doc["best_integration"], "crossover": doc["crossover"],
             "hoped_for": doc["hoped_for"], "at_risk": doc["at_risk"]}
@@ -241,12 +352,13 @@ def generate_offspring(*, parent, best, donor_a, donor_b, selection, out_dir, ma
         payload["other_mutations_already_chosen_this_generation"] = list(previous_mutations)
         payload["diversity_instruction"] = "Try a different behavioral change or scope, not a paraphrase."
     prompt = json.dumps(payload, ensure_ascii=False)
+    system = (_MATRIX_SYSTEM if selection["reason"] == "matrix_observed_contrast" else _SYSTEM) + _OUTPUT_SCHEMA
     error = ""
     for attempt in range(1, 4):
         path = attempts / f"{attempt:02d}"
         path.mkdir(exist_ok=True)
         user = prompt if not error else prompt + "\nFix this validation error: " + error
-        request = {"system": _SYSTEM, "user": user, "max_completion_tokens": max_completion_tokens}
+        request = {"system": system, "user": user, "max_completion_tokens": max_completion_tokens}
         request_path = path / "request.json"
         if request_path.exists() and read_json(request_path) != request:
             raise ValueError(f"resume would change recorded optimizer input: {request_path}")
@@ -257,17 +369,19 @@ def generate_offspring(*, parent, best, donor_a, donor_b, selection, out_dir, ma
         else:
             with measure_usage(root, "generation", attempt=str(path.relative_to(root))):
                 try:
-                    raw, usage = chat_optimizer(system=_SYSTEM, user=user, max_completion_tokens=max_completion_tokens,
+                    raw, usage = chat_optimizer(system=system, user=user, max_completion_tokens=max_completion_tokens,
                                                 retries=3, stage="evolution_generation")
                 except Exception as exc:
                     save_json(path / "error.json", {"type": type(exc).__name__})
                     raise
                 save_json(response_path, {"raw": raw, "provider_usage": usage})
         try:
-            result = _proposal(raw, parent, sources, selection, edit_budget)
+            result = _proposal(raw, parent, sources, selection, edit_budget, evidence)
+            result["shown_example_ids"] = [example["id"] for example in evidence]
+            if result["status"] == "skipped":
+                return result
             if hashlib.sha256(result["skill"].encode()).hexdigest() in reserved_hashes:
                 raise ValueError("This text already exists in the population or this generation. Try a distinct edit.")
-            result["shown_example_ids"] = [example["id"] for example in evidence]
             return result
         except ValueError as exc:
             error = str(exc)

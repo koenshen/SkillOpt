@@ -49,3 +49,18 @@ source075=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_ag
 `native_step_usage` 单列第一阶段 `history.json` 各训练步已有的输入/输出 token；该口径不含步外的初始化或 epoch 末工作。只比较本次二次进化额外花了多少，用 `incremental_usage.total`。
 
 `native_steps_plus_evolution_usage` 给出上述第一阶段逐步成本与本次二次进化的合计，分别列出输入、输出和总 token。
+
+## 用旧的父本和供体对照两版生成提示词
+
+矩阵模式给生成器一个虚构的维修记录示例，演示如何从多条编辑中找出能解释作答差异的那一条，并用反例限定它的适用范围。每个实际展示的 target/risk 题都要留下判断：新编辑会改变哪个选择，或者这条规则解释不了该题。解释不了任何 target 时允许返回 `skip_pair`。程序核对原文引用、编辑位置和声明的答案方向；候选的实际成绩由独立的答题调用给出。
+
+本轮固定 TriviaQA 首次 `p=0.75` 二次进化的 10 个位置。每个位置使用原父本、全局 best、A/B、题目和原来的 dev 排序。同一代先前位置的变异说明也取自旧请求。每个位置独立对照，第一代新生成的子代不进入第二代的父本。这里只使用 dev。
+
+在 CPU 的 SkillOpt 仓库根目录，使用相同的 API 环境运行：
+
+```bash
+prior=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_170927_evo2_rho075
+.venv/bin/python -B -u -m skillopt_evolution.replay_prompt --prior-run "$prior"
+```
+
+比较分母固定为旧子代实际做过的 15 次 target 和 5 次 risk（按“题 × 子代”计）。若新子代在其中某题之前提前淘汰，独立补测该题，仅用于成对比较，补测分数不进入 dev 选优。主动跳过和无效输出分别核对；沿用父本的答案不作为新子代的实测结果。运行被打断时用 `--resume <本次回放目录>` 续跑。

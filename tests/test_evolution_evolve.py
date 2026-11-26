@@ -15,7 +15,8 @@ def record(uid, scores, parent_hash=None, skill=None):
     return {
         "id": uid, "skill": text, "sha256": hashlib.sha256(text.encode()).hexdigest(),
         "parent_sha256": parent_hash, "rows": {
-            k: {"id": k, "agent_ok": v is not None, "hard": 0 if v is None else v}
+            k: {"id": k, "question": f"Question {k}?", "predicted_answer": f"answer-{v}",
+                "agent_ok": v is not None, "hard": 0 if v is None else v}
             for k, v in scores.items()
         }, "edits": [{"index": 1, "op": "append", "target": "", "content": text}],
     }
@@ -64,6 +65,7 @@ class EvolutionDonorTests(unittest.TestCase):
     def test_generation_rejects_wrong_index_and_reuses_valid_result_on_resume(self):
         s = self.select()
         response = {
+            "decision": "propose",
             "difference": "A uses a different source.",
             "mutation": "Keep useful distinctions.",
             "best_integration": "Keep the best rules as the base.",
@@ -75,6 +77,10 @@ class EvolutionDonorTests(unittest.TestCase):
                 {"donor": "B", "edit_index": None, "field": "skill", "quote": self.b["skill"]},
             ],
             "edits": [{"op": "append", "content": "Use evidence tied to the requested entity."}],
+            "checks": [{"id": "1", "outcome": "repair", "expected_answer": "answer-1", "source_a_edit": 1,
+                        "patch_edit": 1, "application": "Use the evidence naming the requested entity."},
+                       {"id": "2", "outcome": "preserve", "expected_answer": "answer-1", "source_a_edit": None,
+                        "patch_edit": None, "application": "Keep the parent's rule on this comparison."}],
         }
         wrong = json.loads(json.dumps(response))
         wrong["sources"][0]["edit_index"] = 2
@@ -92,5 +98,35 @@ class EvolutionDonorTests(unittest.TestCase):
             self.assertEqual(result, resumed)
             self.assertEqual(result["edits"][0]["status"], "applied_append")
             self.assertEqual(result["status"], "generated")
+            self.assertEqual(result["checks"], response["checks"])
             self.assertTrue((Path(folder)/"generation_attempts/01/validation.json").exists())
             self.assertEqual(len(list((Path(folder)/"token_events").glob("*.json"))), 2)
+
+    def test_direction_and_example_coverage(self):
+        selection = self.select()
+        examples = evolve._examples(self.x, self.best, self.a, self.b, selection)
+        sources = [{"donor": "A", "field": "content", "edit_index": 1}]
+        valid = {"checks": [
+            {"id": "1", "outcome": "repair", "expected_answer": "answer-1", "source_a_edit": 1,
+             "patch_edit": 1, "application": "Change the unit based on the question."},
+            {"id": "2", "outcome": "at_risk", "expected_answer": None, "source_a_edit": None,
+             "patch_edit": 1, "application": "The entity scope is ambiguous here."}]}
+        self.assertEqual(evolve._grounding_checks(valid, examples, sources, [{}]), valid["checks"])
+        for changes in ({"expected_answer": "answer-0"}, {"source_a_edit": 99}, {"patch_edit": 0}):
+            invalid = {"checks": [dict(valid["checks"][0], **changes), valid["checks"][1]]}
+            with self.assertRaises(ValueError):
+                evolve._grounding_checks(invalid, examples, sources, [{}])
+        with self.assertRaisesRegex(ValueError, "every displayed"):
+            evolve._grounding_checks({"checks": valid["checks"][:1]}, examples, sources, [{}])
+
+    def test_skip_pair_records_unclear_attribution_without_retry(self):
+        response = {"decision":"skip_pair", "reason":"Neither donor edit changes the kind of entity requested.",
+                    "edits":[]}
+        with tempfile.TemporaryDirectory() as folder, patch.object(
+                evolve, "chat_optimizer", return_value=(json.dumps(response), {})) as optimizer:
+            result = evolve.generate_offspring(parent=self.x, best=self.best, donor_a=self.a, donor_b=self.b,
+                                               selection=self.select(), out_dir=folder, max_completion_tokens=131072)
+            optimizer.assert_called_once()
+            self.assertEqual(result["status"], "skipped")
+            self.assertEqual(result["reason"], "unexplained_contrast")
+            self.assertEqual(result["shown_example_ids"], ["1","2"])
