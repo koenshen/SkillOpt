@@ -38,10 +38,10 @@ class EvolutionDonorTests(unittest.TestCase):
                                     rejected=self.rejected if pool is None else pool,
                                     mode="matrix", rng=random.Random(42))
 
-    def test_observed_positive_siblings_and_counterexamples(self):
+    def test_observed_positive_pair_and_counterexamples(self):
         s = self.select()
-        self.assertEqual((s["donor_a"], s["donor_b"]), ("donor_a", "donor_b"))
-        self.assertTrue(s["same_parent"])
+        self.assertEqual({s["donor_a"], s["donor_b"]}, {"donor_a", "other"})
+        self.assertFalse(s["same_parent"])
         self.assertEqual(s["target_ids"], ["1"])
         self.assertEqual(s["risk_ids"], ["2"])
         self.assertEqual(s["distinct_support"], {"1": 2})
@@ -52,18 +52,24 @@ class EvolutionDonorTests(unittest.TestCase):
             s = self.select([self.a, self.b, other], [self.x])
             self.assertEqual(s["status"], "skipped")
 
-    def test_no_observed_failure_in_controls(self):
-        self.b["rows"].pop("1")
-        # Restrict population to X, so the comparator cannot fall back on best.
-        self.assertEqual(self.select(pop=[self.x])["status"], "skipped")
+    def test_negative_control_does_not_fill_second_positive_position(self):
+        s = self.select([self.a, self.b])
+        self.assertEqual(s["reason"], "no_eligible_shared_success_pair")
 
-    def test_random_fallback_draws_distinct_population_documents(self):
-        s = self.select(pool=[])
-        self.assertEqual(s["reason"], "no_repeated_repair_random_fallback")
+    def test_random_control_draws_distinct_population_documents(self):
+        s = evolve.select_donors(parent=self.x, best=self.best, population=self.pop,
+                                 rejected=[], mode="random", rng=random.Random(42))
+        self.assertEqual(s["reason"], "random_population_control")
         self.assertEqual({s["donor_a"], s["donor_b"]}, {"parent", "best"})
 
+    @staticmethod
+    def legacy_selection():
+        # Replay of the earlier positive/negative-donor experiment.
+        return {"status": "selected", "donor_a": "donor_a", "donor_b": "donor_b",
+                "reason": "matrix_observed_contrast", "target_ids": ["1"], "risk_ids": ["2"]}
+
     def test_generation_rejects_wrong_index_and_reuses_valid_result_on_resume(self):
-        s = self.select()
+        s = self.legacy_selection()
         response = {
             "decision": "propose",
             "difference": "A uses a different source.",
@@ -103,7 +109,7 @@ class EvolutionDonorTests(unittest.TestCase):
             self.assertEqual(len(list((Path(folder)/"token_events").glob("*.json"))), 2)
 
     def test_direction_and_example_coverage(self):
-        selection = self.select()
+        selection = self.legacy_selection()
         examples = evolve._examples(self.x, self.best, self.a, self.b, selection)
         sources = [{"donor": "A", "field": "content", "edit_index": 1}]
         valid = {"checks": [
@@ -125,7 +131,7 @@ class EvolutionDonorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch.object(
                 evolve, "chat_optimizer", return_value=(json.dumps(response), {})) as optimizer:
             result = evolve.generate_offspring(parent=self.x, best=self.best, donor_a=self.a, donor_b=self.b,
-                                               selection=self.select(), out_dir=folder, max_completion_tokens=131072)
+                                               selection=self.legacy_selection(), out_dir=folder, max_completion_tokens=131072)
             optimizer.assert_called_once()
             self.assertEqual(result["status"], "skipped")
             self.assertEqual(result["reason"], "unexplained_contrast")

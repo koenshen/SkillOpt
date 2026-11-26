@@ -245,7 +245,7 @@ def load_archive(source: Path, dev_ids: list[str], population_cap: int = 5) -> d
         raise ValueError("Cannot associate the native best with a complete dev answer sheet")
 
     population, initial = _initial_population(records, best_sha, population_cap)
-    return {"records": records, "population": population, "history": history,
+    return {"source_root": str(source.resolve()), "records": records, "population": population, "history": history,
             "initial_population": initial, "skipped": skipped,
             "native_step_usage": {**tokens, "total_tokens": tokens["input_tokens"] + tokens["output_tokens"],
                                   "scope": "history.json per-step token deltas; excludes costs outside native steps"}}

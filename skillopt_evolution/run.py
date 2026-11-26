@@ -23,6 +23,7 @@ from skillopt.evaluation.early_stop import lineage_order, update_history
 from .archive import load_archive
 from .evaluate import evaluate_candidate
 from .evolve import generate_offspring, select_donors
+from .traces import TraceReader
 from .usage import now, read_json, save_json, summarize_usage
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,12 +80,87 @@ def check_or_write(path, value):
         save_json(path, value)
 
 
+def fill_generation(*, directory, parents, best, rejected, by_id, plans, trace_reader,
+                    adapter, options, generation, reserved):
+    """Persist every rejected pairing and keep the population frozen while filling its slots."""
+    proposals, actual_plans = [], []
+    used_pairs, used_items = set(), set()
+    for slot, (parent, initial) in enumerate(zip(parents, plans), 1):
+        work = directory / f"slot_{slot:02d}"
+        excluded = set()
+        attempts = []
+        while True:
+            number = len(excluded) + 1
+            if number == 1:
+                plan = initial
+            else:
+                seed = f"{options['seed']}/{generation}/{slot}/replacement/{number}"
+                pair = select_donors(parent=parent, best=best, population=parents, rejected=rejected,
+                                     mode=options["strategy"], rng=random.Random(seed), used_pairs=used_pairs,
+                                     used_items=used_items, excluded_pairs=excluded)
+                plan = dict(pair, slot=slot, rng_seed=seed, parent=parent["id"], best=best["id"])
+            directory_for_pair = work / "donor_attempts" / f"{number:02d}"
+            check_or_write(directory_for_pair / "selection.json", plan)
+            if plan["status"] != "selected":
+                reason = plan["reason"]
+                attempts.append({"attempt": number, "reason": reason, "status": "no_pair"})
+                break
+            a, b = by_id[plan["donor_a"]], by_id[plan["donor_b"]]
+            signature = tuple(sorted((a["sha256"], b["sha256"])))
+            if signature in excluded or a["sha256"] == b["sha256"]:
+                raise RuntimeError(f"Donor selector reused a pair for slot {slot}")
+            excluded.add(signature)
+            used_pairs.add((a["id"], b["id"]))
+            used_items.update(plan["target_ids"])
+            path = directory_for_pair / "proposal.json"
+            if path.exists():
+                proposal = read_json(path)
+            else:
+                extra = {"trace_reader": trace_reader} if plan["reason"] == "matrix_shared_success" else {}
+                proposal = generate_offspring(
+                    parent=parent, best=best, donor_a=a, donor_b=b, selection=plan, out_dir=directory_for_pair,
+                    max_completion_tokens=adapter.max_completion_tokens, edit_budget=options["edit_budget"],
+                    previous_mutations=[p["mutation"] for p in proposals], reserved_hashes=reserved, **extra)
+            if proposal["status"] == "generated":
+                text = proposal["skill"]
+                if not text.strip() or sha(text) in reserved or sha(text.strip()) in reserved:
+                    proposal = dict(proposal, status="skipped", reason="duplicate_or_empty_skill")
+            save_json(path, proposal)
+            attempts.append({"attempt": number, "a": a["id"], "b": b["id"], "status": proposal["status"],
+                             "reason": proposal.get("reason")})
+            save_json(work / "donor_attempts.json", attempts)
+            if proposal["status"] == "generated":
+                reserved.update((sha(text), sha(text.strip())))
+                save_json(work / "proposal.json", proposal)
+                (work / "child_skill.md").write_text(text, encoding="utf-8")
+                proposals.append(proposal)
+                actual_plans.append(dict(plan, donor_attempt=number))
+                print(f"  slot {slot}: child generated with pair {number} ({a['id']}, {b['id']})", flush=True)
+                break
+            print(f"  slot {slot}: replacing pair {number} ({proposal.get('reason')})", flush=True)
+        if len(proposals) != slot:
+            save_json(work / "donor_attempts.json", attempts)
+            failure = {"status": "incomplete", "stop_reason": reason, "generation": generation,
+                       "slot": slot, "parent": parent["id"], "generated": len(proposals),
+                       "evaluated": 0, "required": len(parents), "distinct_pairs_tried": len(excluded)}
+            save_json(directory / "summary.json", dict(failure, usage=summarize_usage(directory)))
+            root = directory.parent.parent
+            save_json(root / "summary.json", dict(failure, incremental_usage=summarize_usage(root)))
+            raise RuntimeError(f"Generation {generation}, slot {slot} unfilled: {reason}; see {work}")
+    return proposals, actual_plans
+
+
 def run_loop(*, archive, items, adapter, out, options):
     """Only this loop mutates stage-2 state. Replay committed slots on resume."""
     population = list(archive["population"])
+    if options["strategy"] == "matrix" and len(population) != 5:
+        raise ValueError(f"Matrix evolution requires five distinct full-score parents; found {len(population)}")
     best = winner(population)
     records = list(archive["records"])
     by_id = {r["id"]: r for r in records}
+    trace_reader = TraceReader(archive.get("source_root"), out)
+    for record in records:
+        trace_reader.register(record)
     history = {k: list(values) for k, values in archive["history"].items()}
     dev_ids = [str(item["id"]) for item in items]
     cache, origins = defaultdict(dict), defaultdict(dict)
@@ -107,37 +183,16 @@ def run_loop(*, archive, items, adapter, out, options):
         parents = list(population)
         rejected = [rec for rec in records if rec["action"] == "reject"]
         plans = frozen_selections(parents, best, rejected, options["strategy"], options["seed"], generation)
-        check_or_write(directory / "frozen.json", {"parents": list(map(identity, parents)),
-                       "best": identity(best), "order": order, "plans": plans})
+        frozen = {"parents": list(map(identity, parents)), "best": identity(best), "order": order}
+        check_or_write(directory / "generation_inputs.json", dict(frozen, plans=plans,
+                       required_children=len(parents), refill_policy="distinct_pairs_until_filled_or_exhausted"))
         print(f"Generation {generation}: {len(parents)} parents, best {best['id']} "
               f"({best['correct']}/{len(dev_ids)})", flush=True)
-        proposals = []
-        reserved = {r["sha256"] for r in parents}
-
-        # Finish generating every child before the first validation call.
-        for slot, (parent, plan) in enumerate(zip(parents, plans), 1):
-            work = directory / f"slot_{slot:02d}"
-            path = work / "proposal.json"
-            if path.exists():
-                proposal = read_json(path)
-            elif plan["status"] == "selected":
-                proposal = generate_offspring(
-                    parent=parent, best=best, donor_a=by_id[plan["donor_a"]],
-                    donor_b=by_id[plan["donor_b"]], selection=plan, out_dir=work,
-                    edit_budget=options["edit_budget"], max_completion_tokens=adapter.max_completion_tokens,
-                    reserved_hashes=reserved,
-                    previous_mutations=[p["mutation"] for p in proposals if p["status"] == "generated"])
-            else:
-                proposal = {"status": "skipped", "reason": plan["reason"]}
-            if proposal["status"] == "generated":
-                h = sha(proposal["skill"])
-                if h in reserved:
-                    proposal = dict(proposal, status="skipped", reason="duplicate_in_frozen_generation")
-                reserved.add(h)
-            save_json(path, proposal)
-            if proposal["status"] == "generated":
-                (work / "child_skill.md").write_text(proposal["skill"], encoding="utf-8")
-            proposals.append(proposal)
+        reserved = {value for r in records for value in (r["sha256"], sha(r["skill"].strip()))}
+        proposals, successful = fill_generation(
+            directory=directory, parents=parents, best=best, rejected=rejected, by_id=by_id, plans=plans,
+            trace_reader=trace_reader, adapter=adapter, options=options, generation=generation, reserved=reserved)
+        check_or_write(directory / "frozen.json", dict(frozen, plans=successful))
 
         replacements = 0
         results = []
@@ -146,11 +201,6 @@ def run_loop(*, archive, items, adapter, out, options):
             work = directory / f"slot_{slot:02d}"
             receipt = work / "decision.json"
             uid = f"g{generation:03d}s{slot:02d}"
-            if proposal["status"] == "skipped":
-                results.append({"id": uid, "parent": parent["id"], "action": "skipped", "reason": proposal["reason"],
-                                "usage": summarize_usage(work)})
-                check_or_write(receipt, results[-1])
-                continue
             text = proposal["skill"]
             h = sha(text)
             if receipt.exists():
@@ -175,7 +225,8 @@ def run_loop(*, archive, items, adapter, out, options):
             child = dict(id=uid, skill=text, sha256=h, parent_sha256=parent["sha256"],
                          action=action, complete=decision["complete"], rows=rows, step=None,
                          correct=decision["correct"] if decision["complete"] else None,
-                         score=decision["accuracy"], edits=proposal["edits"], source=str(work))
+                         score=decision["accuracy"], edits=proposal["edits"], source=str(work.resolve()), row_sources=decision["row_sources"])
+            trace_reader.register(child)
             by_id[uid] = child
             records.append(child)
             for key in decision["new_ids"]:
@@ -198,7 +249,8 @@ def run_loop(*, archive, items, adapter, out, options):
         if top["correct"] > best["correct"]:
             best = top
         flat = 0 if replacements else flat + 1
-        generation_summary = dict(generation=generation, replacements=replacements, flat_generations=flat,
+        generation_summary = dict(generation=generation, generated=len(proposals), evaluated=len(results),
+                                  replacements=replacements, flat_generations=flat,
                                   best=identity(best), population=list(map(identity, population)), slots=results)
         save_json(directory / "summary.json", dict(generation_summary, usage=summarize_usage(directory)))
         generations.append(generation_summary)
@@ -295,12 +347,16 @@ def main(argv=None):
                                   [r for r in archive["records"] if r["action"] == "reject"],
                                   options["strategy"], options["seed"], 1)
         print(json.dumps(dict(source=str(source), selected=list(map(identity, archive["population"])),
+                              required_children_per_generation=5 if options["strategy"] == "matrix" else len(plans),
+                              refill_policy="distinct_pairs_until_filled_or_exhausted",
                               shortfall=archive["initial_population"]["shortfall"],
                               excluded_by_cap=archive["initial_population"]["excluded_by_cap"],
                               native_step_usage=archive["native_step_usage"], first_generation=plans),
                          ensure_ascii=False, indent=2))
         return
 
+    if options["strategy"] == "matrix" and len(archive["population"]) < 5:
+        p.error(f"Full matrix evolution needs 5 distinct complete parents, found {len(archive['population'])}")
     rho = float(cfg["train_early_stop_rho"])
     if not args.resume:
         started = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -324,7 +380,8 @@ def main(argv=None):
                     "split_path": str(items_path.resolve()), "split_sha256": fingerprint(items),
                     "archive_sha256": fingerprint(archive["records"]), "config_sha256": fingerprint(cfg),
                     "source_config": {k: cfg.get(k) for k in model_fields},
-                    "population_cap": 5, "screen_batch": 4, "dev_size": len(ids),
+                    "population_cap": 5, "required_children_per_generation": len(archive["population"]),
+                    "refill_policy": "distinct_pairs_until_filled_or_exhausted", "screen_batch": 4, "dev_size": len(ids),
                     "implementation_sha256": {s.name: sha(s.read_text()) for s in sorted(Path(__file__).parent.glob("*.py"))}}
         if args.resume:
             if any(prior.get(k) != v for k, v in manifest.items()):
