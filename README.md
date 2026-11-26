@@ -1140,3 +1140,15 @@ done
 ```
 
 今后新建一组 TriviaQA 运行，使用 `.venv/bin/python -u -m scripts.evolution_test.pipeline --source <第一阶段目录> --strategy matrix`，进化进程正常结束后自动评估该次运行的最终 skill。若 test 被中断，可单独用 `.venv/bin/python -u -m scripts.evolution_test.run --evolution-dir <该次二次进化目录>` 续评；已经成功作答的题直接复用。
+
+### TriviaQA `p=0.75` 固定供体提示词对照（2026-11-26，北京时间）
+
+17:57:28 在 CPU 的独立 tmux 会话 `prompt-replay-rho075-20261126_175728` 启动，运行提交为 `5387d4c1d25e6cfffd6cf23f1da3d377aba7ded2`。输入为 `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_170927_evo2_rho075`，本次实际输出为 `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_175731_096490_evo2_prompt_replay_rho075`。
+
+在 CPU 仓库根目录、同一 TokenHub API 环境下，用以下命令复现。新运行会创建同级的新时间戳目录。固定 10 个位置的父本、供体、dev 题序及目标/反例来自旧运行。结果在新目录的 `summary.json`，按实际生成、明确跳过及固定分母分别统计；每个位置的 `comparison.json` 保留答案、分数、成本和来源。
+
+```bash
+cd /mnt/sdd3/xuancheng/code/github/SkillOpt
+prior=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261126_170927_evo2_rho075
+.venv/bin/python -B -u -m skillopt_evolution.replay_prompt --prior-run "$prior"
+```
