@@ -428,5 +428,5 @@ def generate_offspring(*, parent, best, donor_a, donor_b, selection, out_dir, ma
             if shared:
                 # Keep the reviewed template exact; get a new pair rather than
                 # adding JSON instructions or a format repair prompt.
-                return {"status": "skipped", "reason": "invalid_full_prompt", "validation_error": error}
+                return {"status": "skipped", "reason": "invalid_sentence_edit", "validation_error": error}
     return {"status": "skipped", "reason": "invalid_proposal", "validation_error": error}

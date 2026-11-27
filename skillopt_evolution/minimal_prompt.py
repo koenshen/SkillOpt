@@ -1,10 +1,12 @@
-"""Render the approved DE-v1 template and read its final, complete child guide."""
+"""Render the approved DE-v1 template and apply its one sentence replacement to the original guide."""
 from __future__ import annotations
 
-from difflib import SequenceMatcher
+from collections import Counter
+from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import re
+import unicodedata
 
 from skillopt.optimizer.skill import APPENDIX_END, APPENDIX_START, SLOW_UPDATE_END, SLOW_UPDATE_START
 
@@ -15,6 +17,74 @@ ROLES = {"A": "Prompt 1 (first historical guide)", "B": "Prompt 2 (second histor
 
 def template_digest():
     return hashlib.sha256(TEMPLATE.read_bytes()).hexdigest()
+
+
+_MARKERS = {SLOW_UPDATE_START: SLOW_UPDATE_END, APPENDIX_START: APPENDIX_END}
+_TOKENS = re.compile(r"<!-- (?:SLOW_UPDATE|APPENDIX)_(?:START|END) -->")
+_LIST_PREFIX = re.compile(r"^[ \t]*(?:(?:[-*+] |\d+[.)] )[ \t]*)?")
+# Inline code (including punctuation in examples) is one unit. Full stops in
+# abbreviations are not sentence terminators. Offsets refer to the original.
+_SENTENCE = re.compile(r"`[^`]*`|[.!?]+(?:[’”\"']|\*\*)?(?=\s|$)")
+_ABBREVIATION = re.compile(r"(?:\b(?:e\.g|i\.e|Mr|Mrs|Ms|Dr|Prof|vs|etc)|\b[A-Z])\.$", re.I)
+
+
+@dataclass(frozen=True)
+class Span:
+    start: int
+    end: int
+    editable: bool
+
+
+def _sentences(line):
+    start = 0
+    for m in _SENTENCE.finditer(line):
+        if line[m.start()] == "`" or _ABBREVIATION.search(line[:m.end()]):
+            continue
+        yield start, m.end()
+        start = m.end()
+    if start < len(line):
+        yield start, len(line)
+
+
+def guide_spans(guide):
+    """Return reference-only blocks/headers and exact editable source offsets."""
+    protected = []
+    opened = None
+    for m in _TOKENS.finditer(guide):
+        token = m.group()
+        if token in _MARKERS and opened is None:
+            opened = (m.start(), _MARKERS[token])
+        elif opened and token == opened[1]:
+            protected.append((opened[0], m.end()))
+            opened = None
+        else:
+            raise ValueError("Unbalanced protected markers in the Basic Prompt")
+    if opened:
+        raise ValueError("Unclosed protected block in the Basic Prompt")
+    spans = []
+    offset = 0
+    for lo, hi in [*protected, (len(guide), len(guide))]:
+        for line in guide[offset:lo].splitlines(keepends=True):
+            if line.lstrip().startswith("#"):
+                spans.append(Span(offset, offset + len(line.rstrip()), False))
+            else:
+                prefix = _LIST_PREFIX.match(line).end()
+                for a, b in _sentences(line[prefix:]):
+                    chunk = line[prefix+a:prefix+b]
+                    if chunk.strip():
+                        spans.append(Span(offset+prefix+a+len(chunk)-len(chunk.lstrip()),
+                                          offset+prefix+a+len(chunk.rstrip()), True))
+            offset += len(line)
+        if lo < hi:
+            spans.append(Span(lo, hi, False))
+        offset = hi
+    counts = Counter(guide[s.start:s.end] for s in spans if s.editable)
+    return [Span(s.start, s.end, s.editable and counts[guide[s.start:s.end]] == 1) for s in spans]
+
+
+def annotated_guide(guide):
+    return "\n".join(("[EDITABLE] " if s.editable else "[READ ONLY] ") + guide[s.start:s.end]
+                     for s in guide_spans(guide))
 
 
 def render(records, examples):
@@ -30,65 +100,78 @@ def render(records, examples):
                 a = ex["answers"][r]
                 evidence.append(f"{ROLES[r]} — actual reply ({a['verdict']}, score {a['hard']}):\n{a['visible_response']}")
         evidence.append("")
-    subs = {"prompt0": records["X"]["skill"], "prompt1": records["A"]["skill"],
+    subs = {"prompt0": annotated_guide(records["X"]["skill"]), "prompt1": records["A"]["skill"],
             "prompt2": records["B"]["skill"], "prompt3": records["best"]["skill"],
             "answer_records": "\n".join(evidence)}
     # Single pass: placeholder-like text in real documents is literal data.
     return re.sub(r"<(prompt[0-3]|answer_records)>", lambda m: subs[m[1]], TEMPLATE.read_text(encoding="utf-8"))
 
 
-def _unchanged_protected_blocks(parent, child):
-    for left, right in [(SLOW_UPDATE_START, SLOW_UPDATE_END), (APPENDIX_START, APPENDIX_END)]:
-        pattern = re.escape(left) + r".*?" + re.escape(right)
-        if (parent.count(left) != child.count(left) or parent.count(right) != child.count(right)
-                or re.findall(pattern, parent, re.S) != re.findall(pattern, child, re.S)):
-            return False
-    return True
+_RESPONSE = re.compile(r"<old>(?P<old>.*?)</old>\s*(?:→|->)?\s*<new>(?P<new>.*?)</new>", re.S)
+_CONTROL = re.compile(r"</?(?:old|new|skip|prompt)>|\[(?:EDITABLE|READ ONLY)\]")
+
+
+def _words(text):
+    return tuple(re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", text).casefold()))
+
+
+def _occurrences(tokens, phrase):
+    return sum(tokens[i:i+len(phrase)] == phrase for i in range(len(tokens)-len(phrase)+1))
+
+
+def _copied_answers(old, new, examples):
+    before, after = _words(old), _words(new)
+    copied = []
+    for ex in examples:
+        for role, row in ex["answers"].items():
+            answer = row["answer"]
+            phrase = _words(answer)
+            # TriviaQA EM permits articles to differ (e.g. "The Barretts").
+            if len(phrase) > 1 and phrase[0] in ("a", "an", "the"):
+                phrase = phrase[1:]
+            if phrase and _occurrences(after, phrase) > _occurrences(before, phrase):
+                copied.append({"id": ex["id"], "role": role, "answer": answer})
+    return copied
 
 
 def parse_reply(raw, parent, examples):
-    """Use the last tagged decision; intermediate evolution steps are audit text."""
-    tags = list(re.finditer(r"<(prompt|skip)>((?:(?!</?(?:prompt|skip)>).)*)</\1>", raw, re.S))
-    if not tags or raw[tags[-1].end():].strip() not in ("", "```"):
-        raise ValueError("Missing final complete <prompt> or <skip> block")
-    tag = tags[-1]
-    content = tag[2].strip()
-    if not content:
-        raise ValueError("Empty tagged output")
-    if tag[1] == "skip":
-        return {"status": "skipped", "reason": "skip_pair", "explanation": content}
-
-    original = parent.strip()
-    if original == content:
+    """Reconstruct locally: everything outside the selected sentence is byte-for-byte identical."""
+    reply = raw.strip()
+    fenced = re.fullmatch(r"```(?:text|xml)?[ \t]*\r?\n(.*?)\r?\n```", reply, re.S)
+    if fenced:
+        reply = fenced[1].strip()
+    reply = reply.removeprefix("Final edit:").strip()
+    skipped = re.fullmatch(r"<skip>(.*?)</skip>", reply, re.S)
+    if skipped and skipped[1].strip() and not _CONTROL.search(skipped[1]):
+        return {"status": "skipped", "reason": "skip_pair", "explanation": skipped[1].strip()}
+    pair = _RESPONSE.fullmatch(reply)
+    if not pair and not _CONTROL.search(reply) and reply.count("→") == 1:
+        pair = re.fullmatch(r"(?P<old>[^\n]+?)\s*→\s*(?P<new>[^\n]+)", reply)
+    if not pair:
+        raise ValueError("Expected only <old>original</old> → <new>replacement</new> or <skip>reason</skip>")
+    old, new = (pair[k].strip() for k in ("old", "new"))
+    if (not old or not new or _CONTROL.search(old) or _CONTROL.search(new)
+            or _TOKENS.search(new) or "\n" in new or "\r" in new):
+        raise ValueError("Expected exactly one nonempty, single-sentence replacement")
+    matches = [s for s in guide_spans(parent) if s.editable and parent[s.start:s.end] == old]
+    if len(matches) != 1:
+        raise ValueError("Original sentence is not a unique [EDITABLE] sentence")
+    if old == new:
         return {"status": "skipped", "reason": "unchanged_child"}
-    if not _unchanged_protected_blocks(original, content):
-        raise ValueError("Child omitted or changed a protected block")
-    old_lines, new_lines = original.splitlines(keepends=True), content.splitlines(keepends=True)
-    # Compare lines without their end-of-line tokens so an end insertion does not
-    # appear to also replace the previously last line.
-    ops = [op for op in SequenceMatcher(None, original.splitlines(), content.splitlines(), autojunk=False).get_opcodes()
-           if op[0] != "equal"]
-    if len(ops) != 1:
-        raise ValueError("Child must change a single localized part of the Basic Prompt")
-    op, i, j, a, b = ops[0]
-    old = "".join(old_lines[i:j]).rstrip("\r\n")
-    new = "".join(new_lines[a:b]).rstrip("\r\n")
-    for fragment in (old, new):
-        if "\n\n" in fragment or len(re.findall(r"(?m)^\s*(?:[-*]|\d+[.)])\s+", fragment)) > 1:
-            raise ValueError("The changed block spans multiple rules")
-    if old == original and len(old_lines) > 1:
-        raise ValueError("The whole guide was replaced")
+    if len([1 for a,b in _sentences(new) if new[a:b].strip()]) != 1:
+        raise ValueError("Replacement contains multiple sentences")
     for ex in examples:
         for literal in (str(ex["id"]), ex["question"]):
             if len(literal) >= 6 and literal in new and literal not in old:
                 raise ValueError("Example identifier or question copied into the skill")
-    # Preserve the native wrapper whitespace (including its trailing newline).
-    start = parent.index(original)
-    skill = parent[:start] + content + parent[start + len(original):]
-    # The training guard formerly used JSON-only model explanations. Keep the
-    # approved generation request unchanged and rank its train items from the actual edit.
-    return {"status": "generated", "skill": skill, "format": "tagged_full_skill",
-            "mutation": new or old, "transfer_cues": {"target": new, "risk": old},
-            "edits": [{"index": 1, "op": op, "target": old, "content": new,
-                       "parent_line_start": i + 1, "parent_line_count": j-i, "status": "observed_text_diff"}],
+    copied = _copied_answers(old, new, examples)
+    if copied:
+        return {"status": "skipped", "reason": "copied_displayed_answer",
+                "matches": copied, "target": old, "content": new}
+    span = matches[0]
+    return {"status": "generated", "skill": parent[:span.start] + new + parent[span.end:],
+            "format": "sentence_replacement", "mutation": new, "transfer_cues": {"target": new, "risk": old},
+            "edits": [{"index": 1, "op": "replace", "target": old, "content": new,
+                       "parent_line_start": 1 + parent.count("\n", 0, span.start),
+                       "start_offset": span.start, "end_offset": span.end, "status": "applied_exact_replace"}],
             "shown_example_ids": [e["id"] for e in examples]}

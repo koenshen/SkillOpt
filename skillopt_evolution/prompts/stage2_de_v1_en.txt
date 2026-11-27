@@ -7,8 +7,8 @@ Prompt 2 (second guide that answered correctly): Rewrite my complex sentence in 
 2. Make a minimal mutation to that difference alone. Use the original wording if it can be transferred directly.
 3. Combine the different parts with Prompt 3, selectively replace it with the different parts in step 2 and generate a new prompt.
 Prompt 3: Rewrite the given input text into simpler English sentences while preserving the same meaning, so it can be understood by non-native English speakers.
-4. Crossover the prompt in the step3 with the following basic prompt and generate a final prompt bracketed with <prompt> and </prompt>:
-Basic Prompt: Make the sentence easier for people who do not speak English fluently to comprehend.
+4. Crossover the prompt in the step3 with the following basic prompt and return only the one editable original sentence and its replacement as <old>original sentence</old> → <new>new sentence</new>:
+Basic Prompt: [EDITABLE] Make the sentence easier for people who do not speak English fluently to comprehend.
 
 1. Identifying the smallest difference between the two guides that answered correctly and the Basic Prompt that explains the difference in answers:
 Prompt 1 (first guide that answered correctly): Rewrite the input text into simpler text, preserving any condition stated in the sentence.
@@ -20,9 +20,9 @@ Prompt 1 says "preserving any condition stated in the sentence." Prompt 2 says "
 3. Combine the different parts with Prompt 3, selectively replace it with the different parts in step 2 and generate a new prompt:
 Prompt 3: Rewrite the given input text into simpler English sentences while preserving the same meaning, so it can be understood by non-native English speakers.
 New Prompt: Rewrite the given input text into simpler English sentences while preserving the same meaning and any condition stated in the original sentence, so it can be understood by non-native English speakers.
-4. Crossover the prompt in the step 3 with the following basic prompt and generate a final prompt bracketed with <prompt> and </prompt>:
-Basic Prompt: Make the sentence easier for people who do not speak English fluently to comprehend.
-Final Prompt: <prompt>Make the sentence easier for people who do not speak English fluently to comprehend, while preserving any condition stated in the original sentence.</prompt>
+4. Crossover the prompt in the step 3 with the following basic prompt and return only the one editable original sentence and its replacement as <old>original sentence</old> → <new>new sentence</new>:
+Basic Prompt: [EDITABLE] Make the sentence easier for people who do not speak English fluently to comprehend.
+Final edit: <old>Make the sentence easier for people who do not speak English fluently to comprehend.</old> → <new>Make the sentence easier for people who do not speak English fluently to comprehend, while preserving any condition stated in the original sentence.</new>
 
 Please follow the instruction step-by-step to generate a better prompt.
 Answer records: <answer_records> (questions to fix and questions the Basic Prompt already answered correctly; for each question, the original passage, the actual answers and their scores)
@@ -33,7 +33,7 @@ If all three guides contain the same instructions or the same conflict, look for
 2. Make a minimal mutation to that difference alone. Use the original wording if it can be transferred directly. Check the scope of the change against questions the Basic Prompt already answered correctly.
 3. Combine the different parts with Prompt 3, selectively replace it with the different parts in step2 and generate a new prompt.
 Prompt 3: <prompt3>
-4. Crossover the prompt in the step3 with the following basic prompt and generate a final prompt bracketed with <prompt> and </prompt>:
+4. Crossover the prompt in the step3 with the following basic prompt and return only the one editable original sentence and its replacement as <old>original sentence</old> → <new>new sentence</new>:
 Transfer only this one difference back into the Basic Prompt. If two rules conflict, change only the sentence that leads to the incorrect choice. Keep the rest of the text unchanged and use the language of the Basic Prompt.
+Copy one [EDITABLE] sentence exactly, without the label. Leave [READ ONLY] text to the program. Do not introduce answer literals from the displayed questions as examples or exceptions. Output only the sentence pair or <skip>reason</skip>.
 Basic Prompt: <prompt0>
-1.

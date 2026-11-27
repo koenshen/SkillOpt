@@ -1,6 +1,4 @@
 """Regression tests for the reviewed English DE template on the actual matrix generation path."""
-import hashlib
-import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -35,37 +33,50 @@ class SharedRulePromptTests(unittest.TestCase):
                 selection=self.plan, out_dir=self.root, max_completion_tokens=131072, trace_reader=trace)
         return result, model
 
-    def test_exact_template_single_pass_and_full_child(self):
-        self.assertEqual(minimal_prompt.template_digest(),
-                         "2937d20272a7c68478b52b8afc02eaec7d8d3873f69c5c5b8a450a0d45350a4c")
-        reply = "1. Compare the two instructions.\nFinal Prompt: <prompt>" + self.child + "</prompt>"
+    def test_only_approved_template_and_program_assembles_child(self):
+        reply = "<old>Use the schedule.</old> → <new>Use the schedule unless the question asks when the job finished.</new>"
         proposal, model = self.call(reply)
         self.assertEqual(proposal["skill"], self.child)
-        self.assertEqual(proposal["shown_example_ids"], ["t","r"])
-        self.assertEqual(proposal["edits"][0]["target"], "Use the schedule.")
-        self.assertEqual(proposal["transfer_cues"]["risk"], "Use the schedule.")
+        self.assertEqual(proposal["shown_example_ids"], ["t", "r"])
         args = model.call_args.kwargs
         self.assertEqual((args["system"], args["max_completion_tokens"]), ("", 131072))
+        self.assertIn("[EDITABLE] Use the schedule.", args["user"])
+        self.assertIn("[READ ONLY] " + SLOW_UPDATE_START, args["user"])
         self.assertIn("Prompt 1: " + self.a["skill"], args["user"])
         self.assertIn("A literal <prompt2>.", args["user"])
-        self.assertIn("Question to fix", args["user"])
         self.assertIn("first historical guide) — actual reply (accepted, score 1)", args["user"])
-        self.assertTrue(args["user"].endswith("1.\n"))
         self.assertEqual(self.call(reply)[1].call_count, 0)
 
-    def test_skip_and_protection(self):
-        result, model = self.call("Analysis. <skip>All three already specify completion.</skip>")
-        self.assertEqual(result["reason"], "skip_pair")
-        model.assert_called_once()
-        with self.assertRaisesRegex(ValueError, "protected"):
-            minimal_prompt.parse_reply("<prompt>Guide without the protected block</prompt>", self.parent["skill"], [])
+    def test_skip_and_reject_readonly_or_ambiguous_original(self):
+        self.assertEqual(self.call("<skip>Both guides already use the same rule.</skip>")[0]["reason"], "skip_pair")
+        original = self.parent["skill"] + "# A heading\nRepeated. Repeated."
+        for target in ("Repeated.", "Prior guidance.", "# A heading", "the schedule"):
+            with self.assertRaisesRegex(ValueError, "EDITABLE"):
+                minimal_prompt.parse_reply(f"<old>{target}</old> → <new>Changed.</new>", original, [])
 
-    def test_reject_unrelated_changes_and_malformed_child(self):
-        for child in ("New first line.\nMiddle.\nNew last line.", "Completely different."):
+    def test_displayed_correct_and_incorrect_answers_cannot_be_newly_embedded(self):
+        cases = [{"id":"q1", "question":"Where was the artist born?", "answers":{
+            "A":{"answer":"Gary, Indiana"}, "B":{"answer":"The Barretts"}, "X":{"answer":"Face"}}}]
+        for new in ("Output GARY — INDIANA.", "Use Barretts.", "For example, face."):
+            p = minimal_prompt.parse_reply(f"<old>Use the schedule.</old> → <new>{new}</new>",
+                                           self.parent["skill"], cases)
+            self.assertEqual(p["reason"], "copied_displayed_answer")
+            self.assertEqual(p["matches"][0]["id"], "q1")
+        # An existing mention can be retained; an unrelated whole word is safe.
+        self.assertEqual(minimal_prompt.parse_reply("Use Face. → Use Face where applicable.",
+                         "Use Face.", cases)["status"], "generated")
+        self.assertEqual(minimal_prompt.parse_reply("Use nouns. → Consider surface features.",
+                         "Use nouns.", cases)["status"], "generated")
+
+    def test_no_full_guides_or_multiple_edits(self):
+        for reply in ["<prompt>an entire document</prompt>",
+                      "<old>Use nouns.</old> → <new>Use names. Strip all titles.</new>",
+                      "<old>Use nouns.</old> → <new>Use titles " + SLOW_UPDATE_START + "</new>",
+                      "<old>Use nouns.</old> → <new>Use titles.</new> and something else"]:
             with self.assertRaises(ValueError):
-                minimal_prompt.parse_reply("<prompt>" + child + "</prompt>", "First.\nMiddle.\nLast.", [])
-        result, model = self.call("<prompt>unclosed output")
-        self.assertEqual(result["reason"], "invalid_full_prompt")
-        model.assert_called_once()
-        attempt = self.root / "generation_attempts/01"
-        self.assertTrue((attempt / "validation.json").exists())
+                minimal_prompt.parse_reply(reply, "Use nouns.", [])
+
+    def test_exact_offsets_and_punctuation_in_examples(self):
+        parent = "  - Use `e.g. an example`. Keep other text.  \r\n"
+        r = minimal_prompt.parse_reply("<old>Keep other text.</old> → <new>Keep the units.</new>", parent, [])
+        self.assertEqual(r["skill"], "  - Use `e.g. an example`. Keep the units.  \r\n")
