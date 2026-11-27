@@ -1192,3 +1192,26 @@ session="dual-success-rho075-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
 tmux -L "$sock" new-session -d -s "$session" -c "$PWD" \
   "umask 077; tmux set-window-option remain-on-exit on && exec .venv/bin/python -B -u -m scripts.evolution_test.pipeline --source '$source075' --strategy matrix --generations 3 --patience 2 --seed 42"
 ```
+
+### TriviaQA 规则冲突诊断和训练题保护检查，p=0.75（2026-11-27，北京时间）
+
+CPU 于 10:51:11 启动完整第二阶段，运行提交为 `13800b60409bb79332448bcef4a43c1ea1fadfcc`。本次双成功供体规则需与 X 作对照：已具备的规则换供体；有冲突时指出同题上的两条相反指令，保留其中一条，只替换导致错误选择的一句。每个提案接受额外 train 检查：4 道相关题和 8 道父本实答正确的保护题，初次回退题由父子各自独立再答一次，确认退步则换供体。满 5 个不同新 skill 后逐个挑战其 dev 父本。初始最高 178/200，最多 3 代，连续两代无替换则早停；随后自动测试最终 best（固定 1,000 题）。
+
+| 项目 | CPU 记录 |
+|---|---|
+| 第一阶段来源 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075` |
+| 实际输出 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261127_105113_evo2_rho075` |
+| tmux | socket `trivia-evo2-20261126_170926`，会话 `rule-guard-rho075-20261127_105111` |
+
+CPU 仓库根目录复现命令（使用同一 TokenHub 服务环境，模型和 131072 输出上限继承自来源归档）：
+
+```bash
+cd /mnt/sdd3/xuancheng/code/github/SkillOpt
+source075=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+sock=trivia-evo2-20261126_170926
+session="rule-guard-rho075-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
+tmux -L "$sock" new-session -d -s "$session" -c "$PWD" \
+  "umask 077; tmux set-window-option remain-on-exit on && exec .venv/bin/python -B -u -m scripts.evolution_test.pipeline --source '$source075' --strategy matrix --generations 3 --patience 2 --seed 42"
+```
+
+每个供体尝试的 `proposal.json` 记录规则诊断；`train_check/result.json` 记录初筛和复答均退步的题。每代摘要和总 `summary.json` 分开记录 generation、train_check、validation 三项 token 成本。自动 test 的得分及用量另存 `test/summary.json`。
