@@ -82,6 +82,7 @@ include = ["skillopt", "skillopt.*", "skillopt_evolution", "skillopt_sleep", "sk
 
 [tool.setuptools.package-data]
 "*" = ["*.md"]
+"skillopt_evolution" = ["prompts/*.txt"]
 
 [tool.ruff]
 line-length = 120

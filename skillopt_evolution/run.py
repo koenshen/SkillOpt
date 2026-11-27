@@ -23,6 +23,7 @@ from skillopt.evaluation.early_stop import lineage_order, update_history
 from .archive import load_archive
 from .evaluate import evaluate_candidate
 from .evolve import generate_offspring, select_donors
+from .minimal_prompt import template_digest
 from .train_check import TrainCheck
 from .traces import TraceReader
 from .usage import now, read_json, save_json, summarize_usage
@@ -403,6 +404,8 @@ def main(argv=None):
                     "population_cap": 5, "required_children_per_generation": len(archive["population"]),
                     "refill_policy": "distinct_pairs_until_filled_or_exhausted", "screen_batch": 4, "dev_size": len(ids),
                     "implementation_sha256": {s.name: sha(s.read_text()) for s in sorted(Path(__file__).parent.glob("*.py"))}}
+        if options["strategy"] == "matrix":
+            manifest["generation_prompt"] = {"name": "stage2_de_v1_en.txt", "sha256": template_digest()}
         if args.resume:
             if any(prior.get(k) != v for k, v in manifest.items()):
                 raise ValueError("Recorded source, implementation or settings changed; cannot mix results")
