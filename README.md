@@ -1236,3 +1236,26 @@ session="v1-minimal-en-rho075-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
 tmux -L "$sock" new-session -d -s "$session" -c "$PWD" \
   "umask 077; tmux set-window-option remain-on-exit on && exec .venv/bin/python -B -u -m scripts.evolution_test.pipeline --source '$source075' --strategy matrix --generations 3 --patience 2 --seed 42"
 ```
+
+### TriviaQA 英文 v1 原句替换与答案复制检查，p=0.75（2026-11-27，北京时间）
+
+19:50:40 在 CPU 启动完整二次进化，运行提交 `b7b3896c15f5a2505079b9b0cd29da62b90b8383`。英文 v1 保留四步，父本中的可编辑句与只读内容在生成请求中明确标记。生成器返回一对原句和新句或请求更换供体，程序组装完整子代并检查新句是否加入了本次展示的答案。每个完成的代实际生成并验证 5 个不同子代；最多 3 代，连续两个完成的代无人替换则结束。pipeline 在进化正常完成后自动评测 1,000 道 test。
+
+| 项目 | CPU 实际路径或标识 |
+|---|---|
+| 第一阶段来源 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075` |
+| 本次第二阶段 | `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261127_195042_evo2_rho075` |
+| tmux | socket `trivia-evo2-20261126_170926`，会话 `v1-sentence-rho075-20261127_195040` |
+
+在 CPU 仓库根目录用同一模型环境复现：
+
+```bash
+cd /mnt/sdd3/xuancheng/code/github/SkillOpt
+src=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+sock=trivia-evo2-20261126_170926
+session="v1-sentence-rho075-$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)"
+tmux -L "$sock" new-session -d -s "$session" -c "$PWD" \
+  "umask 077; tmux set-window-option remain-on-exit on && exec .venv/bin/python -B -u -m scripts.evolution_test.pipeline --source '$src' --strategy matrix --generations 3 --patience 2 --seed 42"
+```
+
+根目录 `manifest.json` 记录生成模板哈希和来源；`summary.json` 分开统计生成、train 检查和 dev 验证成本。每次换组的原因和命中答案可在相应 `donor_attempts/NN/proposal.json` 核对。最终 test 指标和 test 单独用量见 `test/summary.json`。
