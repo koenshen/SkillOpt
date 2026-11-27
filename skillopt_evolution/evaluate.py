@@ -55,7 +55,7 @@ def _read_attempt(directory, requested):
 
 
 def evaluate_candidate(*, adapter, dev_items, order, skill, parent_rows,
-                       cached_rows, out_dir, batch_size=4, cache_sources=None, require_complete=False):
+                       cached_rows, out_dir, batch_size=4, cache_sources=None, require_complete=False, usage_stage="validation"):
     """Use all previously observed IDs to bound the full dev count at each batch.
 
     Cache keys outside this function are exact skill-text hashes in a single
@@ -81,6 +81,8 @@ def evaluate_candidate(*, adapter, dev_items, order, skill, parent_rows,
         "parent_rows_sha256": _digest(parent_rows), "parent_correct": parent_correct,
         "dev_sha256": _digest(dev_items), "frozen_order": order, "batch_size": batch_size,
     }
+    if usage_stage != "validation":
+        signature["usage_stage"] = usage_stage
     if require_complete:
         signature["require_complete"] = True
     manifest = directory / "evaluation_inputs.json"
@@ -145,7 +147,7 @@ def evaluate_candidate(*, adapter, dev_items, order, skill, parent_rows,
             ids = list(missing)
             error = None
             try:
-                with measure_usage(directory, "validation") as token_event:
+                with measure_usage(directory, usage_stage) as token_event:
                     save_json(path / "request.json", {
                         "ids": ids, "attempt_in_batch": attempt,
                         "prior_observed": len(observed), "upper_count_before_batch": upper,

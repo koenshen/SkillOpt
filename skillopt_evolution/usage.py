@@ -59,7 +59,7 @@ def measure_usage(directory: Path, stage: str, *, attempt: str | None = None):
 
 
 def summarize_usage(directory: Path) -> dict:
-    result = {"generation": zero_usage(), "validation": zero_usage(), "total": zero_usage(),
+    result = {"generation": zero_usage(), "validation": zero_usage(), "train_check": zero_usage(), "total": zero_usage(),
               "unfinished_events": [], "failed_events": 0, "zero_reported_token_events": []}
     for path in sorted(directory.rglob("token_events/*.json")):
         event = read_json(path)

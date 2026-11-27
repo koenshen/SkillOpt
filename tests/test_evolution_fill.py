@@ -36,13 +36,13 @@ class FillGenerationTests(unittest.TestCase):
         self.adapter = LocalAdapter()
         self.calls = []
 
-    def run_generation(self, donors, generate):
+    def run_generation(self, donors, generate, checker=None):
         entries = [*self.parents, *donors]
         archive = dict(population=self.parents, records=entries, skipped=[],
                        initial_population={}, native_step_usage=dict(input_tokens=0, output_tokens=0, total_tokens=0),
                        history={str(i): [r["rows"][str(i)]["hard"] for r in entries] for i in range(4)})
         with patch.object(run, "generate_offspring", side_effect=generate):
-            return run.run_loop(archive=archive, items=self.items, adapter=self.adapter, out=self.out,
+            return run.run_loop(archive=archive, items=self.items, adapter=self.adapter, out=self.out, train_checker=checker,
                                 options=dict(seed=42, generations=1, patience=2, strategy="matrix", edit_budget=2))
 
     def test_refills_skipped_and_duplicate_slots_before_any_validation(self):
@@ -88,3 +88,19 @@ class FillGenerationTests(unittest.TestCase):
         self.assertEqual((status["required"], status["generated"], status["evaluated"]), (5, 0, 0))
         with self.assertRaisesRegex(RuntimeError, "unfilled"):
             self.run_generation(self.donors[:2], self.fail)
+
+    def test_failed_training_guard_refills_before_dev_and_keeps_audit(self):
+        from unittest.mock import Mock
+        checker = Mock()
+        checker.check.side_effect = [{"passed":False, "confirmed_regressions":["train-1"]}] + [{"passed":True}]*5
+        def generate(**kwargs):
+            text = f"child {len(self.calls)}"
+            self.calls.append(text)
+            return {"status":"generated", "skill":text, "edits":[], "mutation":text}
+        result = self.run_generation(self.donors, generate, checker)
+        self.assertEqual(result["generations"][0]["evaluated"], 5)
+        self.assertEqual(len(self.calls), 6)
+        self.assertNotIn(self.calls[0], self.adapter.evaluations)
+        attempt = usage.read_json(self.out / "generations/001/slot_01/donor_attempts/01/proposal.json")
+        self.assertEqual(attempt["reason"], "confirmed_train_regression")
+        self.assertEqual(attempt["train_check"]["confirmed_regressions"], ["train-1"])

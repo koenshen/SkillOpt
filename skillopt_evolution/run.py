@@ -23,6 +23,7 @@ from skillopt.evaluation.early_stop import lineage_order, update_history
 from .archive import load_archive
 from .evaluate import evaluate_candidate
 from .evolve import generate_offspring, select_donors
+from .train_check import TrainCheck
 from .traces import TraceReader
 from .usage import now, read_json, save_json, summarize_usage
 
@@ -81,7 +82,7 @@ def check_or_write(path, value):
 
 
 def fill_generation(*, directory, parents, best, rejected, by_id, plans, trace_reader,
-                    adapter, options, generation, reserved):
+                    adapter, options, generation, reserved, train_checker=None):
     """Persist every rejected pairing and keep the population frozen while filling its slots."""
     proposals, actual_plans = [], []
     used_pairs, used_items = set(), set()
@@ -125,6 +126,15 @@ def fill_generation(*, directory, parents, best, rejected, by_id, plans, trace_r
                 text = proposal["skill"]
                 if not text.strip() or sha(text) in reserved or sha(text.strip()) in reserved:
                     proposal = dict(proposal, status="skipped", reason="duplicate_or_empty_skill")
+                elif train_checker is not None:
+                    audit = train_checker.check(adapter=adapter, parent=parent, proposal=proposal,
+                                                selection=plan, out_dir=directory_for_pair / "train_check",
+                                                seed=f"{options['seed']}/{generation}/{slot}/train")
+                    proposal = dict(proposal, train_check=audit)
+                    if not audit["passed"]:
+                        proposal.update(status="skipped", reason="confirmed_train_regression")
+            if proposal.get("reason") == "confirmed_train_regression":
+                reserved.add(sha(proposal["skill"].strip()))
             save_json(path, proposal)
             attempts.append({"attempt": number, "a": a["id"], "b": b["id"], "status": proposal["status"],
                              "reason": proposal.get("reason")})
@@ -150,7 +160,7 @@ def fill_generation(*, directory, parents, best, rejected, by_id, plans, trace_r
     return proposals, actual_plans
 
 
-def run_loop(*, archive, items, adapter, out, options):
+def run_loop(*, archive, items, adapter, out, options, train_checker=None):
     """Only this loop mutates stage-2 state. Replay committed slots on resume."""
     population = list(archive["population"])
     if options["strategy"] == "matrix" and len(population) != 5:
@@ -191,7 +201,7 @@ def run_loop(*, archive, items, adapter, out, options):
         reserved = {value for r in records for value in (r["sha256"], sha(r["skill"].strip()))}
         proposals, successful = fill_generation(
             directory=directory, parents=parents, best=best, rejected=rejected, by_id=by_id, plans=plans,
-            trace_reader=trace_reader, adapter=adapter, options=options, generation=generation, reserved=reserved)
+            trace_reader=trace_reader, adapter=adapter, options=options, generation=generation, reserved=reserved, train_checker=train_checker)
         check_or_write(directory / "frozen.json", dict(frozen, plans=successful))
 
         replacements = 0
@@ -342,12 +352,22 @@ def main(argv=None):
                    "edit_budget": int(read_json(source / "history.json")[-1].get("edit_budget") or cfg["edit_budget"])}
     if min(options["generations"], options["patience"], options["edit_budget"]) < 1:
         p.error("Generations, patience and edit budget must be positive")
+    checker = None
+    train_meta = {}
+    if options["strategy"] == "matrix":
+        train_path = split / "train" / "items.json"
+        train_items = read_json(train_path)
+        checker = TrainCheck(train_items, items)
+        train_meta = {"split": str(train_path.resolve()), "sha256": fingerprint(train_items),
+                      "eligible_unique_questions": len(checker.train),
+                      "panel": {"target": 4, "related_parent_correct": 4, "general_parent_correct": 4},
+                      "rejection": "same parent-correct / child-wrong item in two independent answer pairs"}
     if args.inspect:
         plans = frozen_selections(archive["population"], winner(archive["population"]),
                                   [r for r in archive["records"] if r["action"] == "reject"],
                                   options["strategy"], options["seed"], 1)
         print(json.dumps(dict(source=str(source), selected=list(map(identity, archive["population"])),
-                              required_children_per_generation=5 if options["strategy"] == "matrix" else len(plans),
+                              train_check=train_meta, required_children_per_generation=5 if options["strategy"] == "matrix" else len(plans),
                               refill_policy="distinct_pairs_until_filled_or_exhausted",
                               shortfall=archive["initial_population"]["shortfall"],
                               excluded_by_cap=archive["initial_population"]["excluded_by_cap"],
@@ -379,7 +399,7 @@ def main(argv=None):
         manifest = {"format": 1, "source": str(source), "output": str(out), "benchmark": bench, "options": options,
                     "split_path": str(items_path.resolve()), "split_sha256": fingerprint(items),
                     "archive_sha256": fingerprint(archive["records"]), "config_sha256": fingerprint(cfg),
-                    "source_config": {k: cfg.get(k) for k in model_fields},
+                    "source_config": {k: cfg.get(k) for k in model_fields}, "train_check": train_meta,
                     "population_cap": 5, "required_children_per_generation": len(archive["population"]),
                     "refill_policy": "distinct_pairs_until_filled_or_exhausted", "screen_batch": 4, "dev_size": len(ids),
                     "implementation_sha256": {s.name: sha(s.read_text()) for s in sorted(Path(__file__).parent.glob("*.py"))}}
@@ -401,7 +421,7 @@ def main(argv=None):
                                                    git_revision=revision.stdout.strip()))
         print(f"Output: {out}", flush=True)
         try:
-            result = run_loop(archive=archive, items=items, adapter=archived_adapter(cfg), out=out, options=options)
+            result = run_loop(archive=archive, items=items, adapter=archived_adapter(cfg), out=out, options=options, train_checker=checker)
         except Exception as exc:
             frames = traceback.extract_tb(exc.__traceback__)
             save_json(out / "last_failure.json", {"time": now(), "exception": type(exc).__name__,

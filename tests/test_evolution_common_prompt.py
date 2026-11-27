@@ -17,14 +17,18 @@ class SharedRulePromptTests(unittest.TestCase):
         self.plan = {"status": "selected", "reason": "matrix_shared_success", "donor_a": "a",
                      "donor_b": "b", "target_ids": ["t"], "risk_ids": ["r"]}
         self.b["rows"]["t"]["predicted_answer"] = "different accepted alias"
-        self.patch = {"decision": "propose", "common_rule": "Select completed observations.",
+        self.patch = {"decision": "propose",
+                      "diagnosis": {"kind": "missing_step", "target_id": "t", "accepted_answer": "answer-1",
+                                    "x_answer": "answer-0", "donor_action": "Read completion entry.",
+                                    "x_action": "Read the schedule."},
+                      "transfer_cues": {"target": "finished events", "risk": "scheduled events"}, "common_rule": "Select completed observations.",
                       "difference": "X chooses the schedule instead.", "x_rule_quote": self.x["skill"], "mutation": "Restrict to actual event.",
                       "best_integration": "Keep schedule interpretation for plans.",
                       "crossover": "Insert branch on completed vs planned.",
                       "hoped_for": "Find actual times", "at_risk": "Confuse a forecast with completion",
                       "sources": [{"donor": role, "edit_index": None, "field": "skill", "quote": donor["skill"]}
                                   for role, donor in (("A", self.a), ("B", self.b))],
-                      "edits": [{"op": "append", "content": "For a finished event select its completion entry."}],
+                      "edits": [{"op": "insert_after", "target": self.x["skill"], "content": "For a finished event select its completion entry."}],
                       "checks": [{"id": k, "outcome": outcome, "passage_quote": "Maintenance log",
                                   "application": "Identify the source record for the requested event.",
                                   "patch_edit": 1} for k, outcome in (("t", "repair"), ("r", "preserve"))]}
@@ -63,6 +67,31 @@ class SharedRulePromptTests(unittest.TestCase):
 
     def test_no_shared_rule_requests_new_donor_pair(self):
         p, calls = self.propose([{"decision": "skip_pair", "edits": [], "checked_target_ids": ["t"],
-                                  "reason": "The two accepted donors specify unrelated rules."}])
+                                  "diagnosis": {"kind":"unsupported"}, "reason": "The two accepted donors specify unrelated rules."}])
         self.assertEqual(p["status"], "skipped")
+        self.assertEqual(len(calls), 1)
+
+    def test_conflict_replaces_only_the_broad_sentence(self):
+        keep = "Read the completion entry for finished events."
+        broad = "Use planned times for every inspection."
+        self.x["skill"] = f"{keep} {broad} Preserve other information."
+        doc = self.patch
+        doc["diagnosis"].update(kind="conflict", keep_rule_quote=keep, keep_action="This job finished, so use actual time.")
+        doc["x_rule_quote"] = broad
+        content = "Use the planned time for an inspection only when asked for its schedule."
+        doc["edits"] = [{"op":"replace", "target":broad, "content":content}]
+        corrupt = json.loads(json.dumps(doc))
+        corrupt["edits"][0]["target"] = keep
+        bad_answer = json.loads(json.dumps(doc))
+        bad_answer["diagnosis"]["x_answer"] = doc["diagnosis"]["accepted_answer"]
+        proposal, calls = self.propose([corrupt, bad_answer, doc])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(proposal["skill"], self.x["skill"].replace(broad, content))
+
+    def test_equivalent_citations_in_x_trigger_new_donors(self):
+        original = self.x["skill"]
+        self.x["skill"] += " " + self.a["skill"] + " " + self.b["skill"]
+        self.patch["x_rule_quote"] = original
+        proposal, calls = self.propose([self.patch])
+        self.assertEqual(proposal["reason"], "existing_rule")
         self.assertEqual(len(calls), 1)
