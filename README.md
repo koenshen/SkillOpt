@@ -1259,3 +1259,27 @@ tmux -L "$sock" new-session -d -s "$session" -c "$PWD" \
 ```
 
 根目录 `manifest.json` 记录生成模板哈希和来源；`summary.json` 分开统计生成、train 检查和 dev 验证成本。每次换组的原因和命中答案可在相应 `donor_attempts/NN/proposal.json` 核对。最终 test 指标和 test 单独用量见 `test/summary.json`。
+
+### TriviaQA v62 的五条独立编辑，完整 dev（2026-11-28，北京时间）
+
+22:57:31 在 CPU 启动，运行提交 `0cdbeff`。五个子代分别从第一阶段 p=0.75 的 v62 插入一条归档编辑，独立回答 200 道 dev 题。使用归档模型 `deepseek-v4.1-flash-1017/huoshan_L/sfc`、原始答题模板、24 并发和 131072 输出上限。基准为第 62 步的原始答卷 178/200。
+
+| 插入 v62 的编辑 | Dev EM | 修好 | 改坏 |
+|---|---:|---:|---:|
+| v74 第 3 条 | 172/200 | 0 | 6 |
+| v53 第 2 条 | 173/200 | 0 | 5 |
+| v35 第 1 条的第一个项目符号 | 173/200 | 0 | 5 |
+| v22 第 2 条中分号后的 broad-category 分句 | 178/200 | 3 | 3 |
+| v12 第 3 条 | 173/200 | 1 | 6 |
+
+CPU 结果目录为 `/mnt/sdd3/xuancheng/code/github/SkillOpt/outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_20261128_225731_v62_single_edits_dev`。每个子目录含实际评估的 `skill.md` 和逐题 `evaluation.json`。总用量为 4,505,075 个输入 token 和 97,777 个输出 token。tmux socket 为 `trivia-evo2-20261126_170926`，会话为 `v62-single-edits-20261128_225731`。
+
+在已配置同一模型凭据的 CPU 会话中复现：
+
+```bash
+cd /mnt/sdd3/xuancheng/code/github/SkillOpt
+src=outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017L_20261120_001733_agg_b4_rho075
+stamp=$(TZ=Asia/Shanghai date +%Y%m%d_%H%M%S)
+out="outputs/skillopt_triviaqa_deepseek-v4.1-flash-1017-huoshan_L-sfc_${stamp}_v62_single_edits_dev"
+.venv/bin/python -B -u -m skillopt_evolution.triviaqa_v62_edits --source "$src" --out "$out"
+```
